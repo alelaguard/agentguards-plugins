@@ -7,8 +7,10 @@ description: Report AgentGuards guardrail status. Use when the user runs /agentg
 Report the current state of AgentGuards protection.
 
 1. Load and call the health check tool:
-   `ToolSearch(query="select:mcp__agentguards__health_check")` then call
-   `health_check`.
+   `ToolSearch(query="agentguards health_check")` then call the `health_check`
+   tool it returns. (As a plugin its full name is
+   `mcp__plugin_agentguards-claude_agentguards__health_check`; the keyword query
+   finds it either way.)
 
 2. Report:
    - **Service reachability** from `health_check` (healthy / unreachable).

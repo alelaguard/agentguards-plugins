@@ -34,7 +34,9 @@ thing the user must supply is their API key.
    Mention this only if they ask or report unexpected blocks.
 
 4. **Verify.** Run the AgentGuards `health_check` MCP tool
-   (`ToolSearch(query="select:mcp__agentguards__health_check")` then call it).
+   (`ToolSearch(query="agentguards health_check")` then call the tool it returns;
+   as a plugin its full name is
+   `mcp__plugin_agentguards-claude_agentguards__health_check`).
    Report whether the service is reachable and which key prefix is active. If it
    fails, the most common cause is `AGENTGUARDS_API_KEY` not being exported in
    the environment Claude Code was launched from.

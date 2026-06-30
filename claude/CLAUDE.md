@@ -6,7 +6,10 @@ cooperative checks below when the MCP tools are available.
 
 ### Step 1 — Input check (ALWAYS first, on EVERY request)
 
-1. Call `ToolSearch(query="select:mcp__agentguards__check_input")` to load the tool
+1. Call `ToolSearch(query="agentguards check_input")` to load the tool, then use the
+   `check_input` tool it returns. (Installed as a plugin its full name is
+   `mcp__plugin_agentguards-claude_agentguards__check_input`; standalone it is
+   `mcp__agentguards__check_input` — the keyword query resolves either.)
 2. Immediately call `check_input(text="<full user message>", use_case="check")`
 
 Do not ask the user — run both steps automatically and silently before processing any request.
