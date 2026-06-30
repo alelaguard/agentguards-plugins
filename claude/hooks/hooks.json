@@ -1,0 +1,36 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "AGENTGUARDS_URL=\"${AGENTGUARDS_URL:-https://prod.agentguards.co}\" python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/agentguards_hook.py\" UserPromptSubmit"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "AGENTGUARDS_URL=\"${AGENTGUARDS_URL:-https://prod.agentguards.co}\" python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/agentguards_hook.py\" PreToolUse"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|WebFetch|WebSearch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "AGENTGUARDS_URL=\"${AGENTGUARDS_URL:-https://prod.agentguards.co}\" python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/agentguards_hook.py\" PostToolUse"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "agentguards",
+  "description": "Official AgentGuards marketplace — LLM security guardrails for AI coding agents.",
+  "owner": {
+    "name": "AgentGuards",
+    "url": "https://agentguards.co"
+  },
+  "plugins": [
+    {
+      "name": "agentguards-claude",
+      "source": "./claude",
+      "description": "LLM security guardrails for Claude Code: jailbreak/prompt-injection detection, web-content scanning, data-exfiltration blocking, and destructive-command authorization."
+    }
+  ]
+}
