@@ -10,7 +10,7 @@ This plugin bundles:
   `validate_output`, `evaluate_policy`, `health_check`),
 - **enforcing hooks** — `UserPromptSubmit` input scanning, `PreToolUse` Bash
   authorization, and `PostToolUse` web-content scanning/redaction,
-- the AgentGuards security instructions (`CLAUDE.md`).
+- the AgentGuards security instructions (the `guardrails` skill).
 
 ## Install
 
@@ -48,6 +48,6 @@ Claude Code. Or just run `/agentguards:setup` and it will walk you through it.
 The hooks call the AgentGuards REST API on every prompt, before every Bash
 command, and after every web fetch — blocking or redacting when AgentGuards
 flags a risk. The MCP tools let Claude cooperatively check inputs and authorize
-actions as described in the bundled `CLAUDE.md`.
+actions as described in the bundled `guardrails` skill.
 
 Learn more at https://agentguards.co.
