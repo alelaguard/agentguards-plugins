@@ -3,7 +3,8 @@
 Official [AgentGuards](https://agentguards.co) plugin marketplace — LLM security
 guardrails for AI coding agents: jailbreak and prompt-injection detection,
 web-content scanning, data-exfiltration blocking, and destructive-command
-authorization.
+authorization. Enforcement is configurable — **fail-closed by default**, or
+fail-open (availability-first) with a single environment variable.
 
 ## Plugins
 
