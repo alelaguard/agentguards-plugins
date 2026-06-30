@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "agentguards": {
+      "type": "http",
+      "url": "https://prod.agentguards.co/mcp",
+      "headers": {
+        "X-API-Key": "${AGENTGUARDS_API_KEY}"
+      }
+    }
+  }
+}
