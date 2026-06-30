@@ -4,6 +4,10 @@ LLM security guardrails for Claude Code in one install: jailbreak and
 prompt-injection detection, web-content scanning, data-exfiltration blocking,
 and destructive-command authorization.
 
+Enforcement is configurable: **fail-closed by default** for strict security, or
+switch to fail-open (availability-first) with a single environment variable
+(`AGENTGUARDS_FAIL_OPEN=true`).
+
 This plugin bundles:
 
 - the **AgentGuards MCP server** (`check_input`, `authorize_action`,
