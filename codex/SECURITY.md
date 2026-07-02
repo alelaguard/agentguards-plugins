@@ -8,7 +8,7 @@ seriously.
 If you discover a security vulnerability in the AgentGuards plugins (Claude Code
 or Codex), please report it privately:
 
-- **Email:** dev@agentguards.co
+- **Email:** support@agentguards.co
 - Please include a description, reproduction steps, and impact assessment.
 - Do **not** open a public issue for security-sensitive reports.
 
