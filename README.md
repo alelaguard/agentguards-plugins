@@ -11,8 +11,7 @@ fail-open (availability-first) with a single environment variable.
 | Plugin | Agent | Description |
 |---|---|---|
 | [`agentguards-claude`](./claude) | Claude Code | MCP server + enforcing hooks (input, Bash, web-content) and security instructions. |
-
-_Codex support is planned and will land here as a sibling plugin._
+| [`agentguards-codex`](./codex) | OpenAI Codex | Enforcing hooks (input, shell, web-content) + MCP server and security instructions. |
 
 ## Install (Claude Code)
 
@@ -30,6 +29,22 @@ export AGENTGUARDS_API_KEY=ag_your_token_here
 Add that to your shell profile and restart Claude Code, or run
 `/agentguards:setup`. See [`claude/README.md`](./claude/README.md) for full
 configuration.
+
+## Install (OpenAI Codex)
+
+```
+codex plugin marketplace add alelaguard/agentguards-plugins
+```
+
+Enable the `agentguards-codex` plugin, then set your API key (get one at
+https://agentguards.co/dashboard/keys):
+
+```
+export AGENTGUARDS_API_KEY=ag_your_token_here
+```
+
+Add that to your shell profile and restart Codex. See
+[`codex/README.md`](./codex/README.md) for full configuration.
 
 ## License
 
