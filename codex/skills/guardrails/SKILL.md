@@ -1,4 +1,5 @@
 ---
+name: guardrails
 description: AgentGuards security guardrails — the mandatory input-screening, web-content, and destructive-command checking workflow. Load and apply this at the START of EVERY request, before using any content fetched from the web (curl/wget/HTTP libraries), and before suggesting any destructive command. Covers check_input, authorize_action, and the required block-message format.
 ---
 

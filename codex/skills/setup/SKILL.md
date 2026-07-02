@@ -1,4 +1,5 @@
 ---
+name: setup
 description: Set up and verify AgentGuards in Codex. Use when the user asks to configure AgentGuards, set their API key, or check that the guardrails are wired up correctly.
 ---
 
