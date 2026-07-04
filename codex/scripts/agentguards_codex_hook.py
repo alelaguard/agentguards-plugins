@@ -218,19 +218,10 @@ def _deny(reason: str) -> None:
 
 
 def _allow_tool(reason: str) -> None:
-    # Run the command with no prompt (safe baseline / already approved).
-    print(
-        json.dumps(
-            {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "allow",
-                    "permissionDecisionReason": reason,
-                }
-            }
-        )
-    )
-    sys.exit(0)
+    # Codex has no "allow" permissionDecision (it rejects it with
+    # "unsupported permissionDecision:allow") — let the command run by exiting 0 with
+    # no output, so Codex proceeds with its normal flow.
+    _continue()
 
 
 def handle_user_prompt(event: dict) -> None:
