@@ -1,3 +1,10 @@
 __pycache__/
 *.pyc
 .DS_Store
+
+# HARD LINE — this is a PUBLIC repo. Server-side detection IP must never land here.
+# Detection patterns / scorer / config live only in the private monorepo.
+# Enforced by .github/workflows/no-server-ip.yml.
+config/
+checks.yaml
+checks.yml

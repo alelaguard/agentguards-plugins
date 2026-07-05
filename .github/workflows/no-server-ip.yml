@@ -1,0 +1,51 @@
+name: No server IP
+
+# This is a PUBLIC repo — it may contain ONLY thin client hooks that call the
+# AgentGuards HTTP API. The detection IP (checks.yaml, pattern lists, the risk
+# scorer) lives exclusively in the private monorepo and must never leak here.
+# This job fails the build if any of it shows up.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fail if server-side detection IP is present
+        shell: bash
+        run: |
+          set -uo pipefail
+          fail=0
+          self=':(exclude).github/workflows/no-server-ip.yml'
+
+          # 1) no checks.yaml / config dir may be tracked
+          if git ls-files | grep -E '(^|/)(checks\.ya?ml$|config/)'; then
+            echo "::error::checks.yaml / config/ must never be committed to this public repo"
+            fail=1
+          fi
+
+          # 2) no detection pattern-list / scorer identifiers anywhere
+          if git grep -InE '_JAILBREAK_PATTERNS|_CRITICAL_PATTERNS|_SENSITIVE_PATTERNS|_SAFE_BINARIES|\bcritical_patterns\b|\bscored_patterns\b|risk_scorer' -- . "$self"; then
+            echo "::error::detection pattern-list / scorer identifiers leaked into a public file"
+            fail=1
+          fi
+
+          # 3) hooks are stdlib-only — they must NEVER import server modules
+          if git grep -InE 'from[[:space:]]+agentguards\.(input_guardrails|action_governance)|^[[:space:]]*import[[:space:]]+agentguards\b' -- . "$self"; then
+            echo "::error::a hook imports agentguards server modules — hooks must use the HTTP API only"
+            fail=1
+          fi
+
+          if [ "$fail" -ne 0 ]; then
+            echo "no-server-ip guard FAILED — server-side IP does not belong in the public plugin repo"
+            exit 1
+          fi
+          echo "no-server-ip guard passed ✓"
