@@ -24,9 +24,10 @@ It requires Python 3.9+ (already present on most systems).
 
 ```
 codex plugin marketplace add alelaguard/agentguards-plugins
+codex plugin add agentguards-codex@agentguards-codex
 ```
 
-Then enable the plugin and provide your API key (get one at
+Then provide your API key (get one at
 https://agentguards.co/dashboard/keys) so both the MCP server and the hooks can
 authenticate:
 

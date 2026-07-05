@@ -30,6 +30,13 @@ import time
 import urllib.request
 from pathlib import Path
 
+# Block panels include a shield glyph (🛡️); avoid a non-UTF-8 locale crashing output.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 AGENTGUARDS_URL = os.getenv("AGENTGUARDS_URL", "https://prod.agentguards.co").rstrip("/")
 
 # Per-session approval cache. A command reaching PostToolUse actually ran (= it
@@ -179,10 +186,11 @@ def _scan_web_output(content: str) -> None:
         _block_output(f"AgentGuards unreachable ({exc}) — fetched web content withheld (fail-closed).")
     decision = result.get("decision", "allow")
     if decision not in ("allow",):
-        checks = result.get("checks", [])
-        hit = next((c for c in checks if not c.get("passed", True)), {})
-        reason = f"{hit.get('check_name', 'policy')} — {hit.get('reason', decision)}"
-        _block_output(reason)
+        # Server composes the full structured panel; print it + a snippet of the content.
+        message = result.get("message") or "🛡️ [AgentGuards] Web content blocked\nDecision: block\nReason: policy - flagged by AgentGuards guardrails\nSeverity: high"
+        flagged = result.get("flagged_input")
+        text = f"{message}\n\n    {flagged}" if flagged else message
+        _block_output(text)
 
 
 def _ask(reason: str) -> None:
@@ -239,13 +247,11 @@ def handle_user_prompt(event: dict) -> None:
             f"fail-closed. Set AGENTGUARDS_FAIL_OPEN=true to allow while it is down."
         )
     if result.get("decision", "allow") in ("block", "escalate", "redact"):
-        checks = result.get("checks", [])
-        hit = next((c for c in checks if not c.get("passed", True)), {})
-        _block_prompt(
-            f"[AgentGuards] Prompt blocked: {hit.get('check_name', 'policy')} - "
-            f"{hit.get('reason', result.get('decision'))} "
-            f"(severity: {hit.get('severity', 'unknown')})"
-        )
+        # Server composes the full structured panel; print it + the flagged input.
+        message = result.get("message") or "🛡️ [AgentGuards] Prompt blocked\nDecision: block\nReason: policy - flagged by AgentGuards guardrails\nSeverity: high"
+        flagged = result.get("flagged_input")
+        text = f"{message}\n\n    {flagged}" if flagged else message
+        _block_prompt(text)
     _continue()
 
 
@@ -278,29 +284,17 @@ def handle_pre_tool_use(event: dict) -> None:
     # is hard-blocked. Anything else is surfaced for approval ("ask") unless every
     # binary was already approved this session. The risk scorer ran first, so a
     # remembered binary still can't carry a destructive command through.
-    risk = result.get("risk_level", "unknown")
-    reason = result.get("reason") or "flagged by AgentGuards policy"
+    # The server composes the full structured panel; print it verbatim, then the command.
+    reason = result.get("reason") or "🛡️ [AgentGuards] Command blocked\nDecision: deny\nReason: policy - flagged by AgentGuards guardrails\nSeverity: high"
     shown = command if len(str(command)) <= 500 else str(command)[:500] + "..."
     if decision == "deny":
-        _deny(
-            f"""AgentGuards blocked this command:
-
-    {shown}
-
-Reason: {reason} (risk: {risk})"""
-        )
+        _deny(f"{reason}\n\n    {shown}")
     if decision == "allow":
         _allow_tool("AgentGuards: safe baseline")
     binaries = _command_binaries(command)
     if binaries and all(b in _approved_binaries(session_id) for b in binaries):
         _allow_tool("AgentGuards: approved earlier this session")
-    _ask(
-        f"""AgentGuards hook requires permission to run:
-
-    {shown}
-
-Reason: {reason} (risk: {risk})"""
-    )
+    _ask(f"{reason}\n\n    {shown}")
 
 
 def handle_post_tool_use(event: dict) -> None:
