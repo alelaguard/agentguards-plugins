@@ -49,6 +49,13 @@ import time
 import urllib.request
 import urllib.error
 
+# Block panels include a shield glyph (🛡️); avoid a non-UTF-8 locale crashing output.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 AGENTGUARDS_URL = os.getenv("AGENTGUARDS_URL", "").rstrip("/")
 AGENTGUARDS_API_KEY = os.getenv("AGENTGUARDS_API_KEY", "")
 
@@ -202,16 +209,12 @@ Set AGENTGUARDS_FAIL_OPEN=true to allow prompts while the service is down."""
 
     decision = result.get("decision", "allow")
     if decision in ("block", "escalate"):
-        checks = result.get("checks", [])
-        hit = next((c for c in checks if not c.get("passed", True)), {})
-        _block(
-            f"""**[AgentGuards] Request blocked**
-The request was blocked by AgentGuards input guardrails.
-**Reason:** {hit.get('check_name', 'policy')} — {hit.get('reason', decision)}
-**Severity:** {hit.get('severity', 'unknown')}
-
-AgentGuards: I cannot proceed with this request."""
-        )
+        # The server composes the full structured panel (shield + heading + Decision/
+        # Reason/Severity); print it verbatim, then the flagged input.
+        message = result.get("message") or "🛡️ [AgentGuards] Prompt blocked\nDecision: block\nReason: policy - flagged by AgentGuards guardrails\nSeverity: high"
+        flagged = result.get("flagged_input")
+        body = message + (f"\n\n    {flagged}" if flagged else "")
+        _block(body)
     _allow()
 
 
@@ -244,19 +247,13 @@ Set AGENTGUARDS_FAIL_OPEN=true to allow commands while the service is down."""
     # session, in which case we don't re-ask. The risk scorer ran first, so a
     # remembered binary still can't carry a destructive command through.
     decision = result.get("decision", "allow")
-    risk = result.get("risk_level", "unknown")
-    reason = result.get("reason") or "flagged by AgentGuards policy"
+    # The server composes the full structured panel (shield + heading + Decision/
+    # Reason/Severity); print it verbatim, then the command that was flagged.
+    reason = result.get("reason") or "🛡️ [AgentGuards] Command blocked\nDecision: deny\nReason: policy - flagged by AgentGuards guardrails\nSeverity: high"
     shown = command if len(command) <= 500 else command[:500] + "..."
 
     if decision == "deny":
-        _pre_tool(
-            "deny",
-            f"""AgentGuards blocked this command:
-
-    {shown}
-
-Reason: {reason} (risk: {risk})""",
-        )
+        _pre_tool("deny", f"{reason}\n\n    {shown}")
     if decision == "allow":
         _pre_tool("allow", "AgentGuards: safe baseline")
 
@@ -264,14 +261,7 @@ Reason: {reason} (risk: {risk})""",
     if binaries and all(b in _approved_binaries(session_id) for b in binaries):
         _pre_tool("allow", "AgentGuards: approved earlier this session")
 
-    _pre_tool(
-        "ask",
-        f"""AgentGuards hook requires permission to run:
-
-    {shown}
-
-Reason: {reason} (risk: {risk})""",
-    )
+    _pre_tool("ask", f"{reason}\n\n    {shown}")
 
 
 def _extract_web_text(event: dict) -> str:
@@ -347,10 +337,11 @@ def handle_web_content(event: dict) -> None:
     # service flagged the content — withhold it rather than passing the original.
     decision = result.get("decision", "allow")
     if decision not in ("allow",):
-        checks = result.get("checks", [])
-        hit = next((c for c in checks if not c.get("passed", True)), {})
-        reason = f"{hit.get('check_name', 'policy')} — {hit.get('reason', decision)}"
-        _post_tool_block(reason, f"[AgentGuards: web content withheld — {reason}]")
+        # Server composes the full structured panel; print it + a snippet of the content.
+        message = result.get("message") or "🛡️ [AgentGuards] Web content blocked\nDecision: block\nReason: policy - flagged by AgentGuards guardrails\nSeverity: high"
+        flagged = result.get("flagged_input")
+        detail = f"{message}\n\n    {flagged}" if flagged else message
+        _post_tool_block(detail, "[AgentGuards: web content withheld]")
     _allow()
 
 
