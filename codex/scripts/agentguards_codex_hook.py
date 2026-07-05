@@ -27,6 +27,7 @@ import os
 import re
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -62,6 +63,14 @@ def _fail_open() -> bool:
     return os.getenv("AGENTGUARDS_FAIL_OPEN", "").strip().lower() in ("1", "true", "yes", "on")
 
 
+class QuotaExceededError(Exception):
+    """API returned 429 QUOTA_EXCEEDED — a real quota block, not a service outage."""
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.user_message = message
+
+
 def _post(path: str, payload: dict) -> dict:
     req = urllib.request.Request(
         f"{AGENTGUARDS_URL}{path}",
@@ -69,8 +78,18 @@ def _post(path: str, payload: dict) -> dict:
         headers={"Content-Type": "application/json", "X-API-Key": _api_key()},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        return json.loads(resp.read())
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        if exc.code == 429:
+            try:
+                body = json.loads(exc.read())
+            except Exception:
+                body = {}
+            if body.get("error") == "QUOTA_EXCEEDED":
+                raise QuotaExceededError(body.get("message") or "Monthly request quota reached.")
+        raise
 
 
 def _command_binaries(command: str) -> list:
@@ -179,6 +198,8 @@ def _scan_web_output(content: str) -> None:
             "/v1/guardrails/evaluate-input",
             {"text": content, "use_case": "web_fetch", "channel": "codex_hook"},
         )
+    except QuotaExceededError as exc:
+        _block_output(f"AgentGuards monthly quota reached: {exc.user_message} Fetched web content withheld.")
     except Exception as exc:
         if _fail_open():
             print(f"AgentGuards: service unreachable ({exc}), allowing web content (AGENTGUARDS_FAIL_OPEN=true)", file=sys.stderr)
@@ -226,9 +247,8 @@ def _deny(reason: str) -> None:
 
 
 def _allow_tool(reason: str) -> None:
-    # Codex has no "allow" permissionDecision (it rejects it with
-    # "unsupported permissionDecision:allow") — let the command run by exiting 0 with
-    # no output, so Codex proceeds with its normal flow.
+    # Codex has no "allow" permissionDecision (it rejects it) — let the command run
+    # by exiting 0 with no output, so Codex proceeds with its normal flow.
     _continue()
 
 
@@ -238,6 +258,8 @@ def handle_user_prompt(event: dict) -> None:
         _continue()
     try:
         result = _post("/v1/guardrails/evaluate-input", {"text": prompt, "use_case": "check"})
+    except QuotaExceededError as exc:
+        _block_prompt(f"[AgentGuards] Monthly quota reached: {exc.user_message}")
     except Exception as exc:
         if _fail_open():
             print(f"AgentGuards: service unreachable ({exc}), allowing prompt (AGENTGUARDS_FAIL_OPEN=true)", file=sys.stderr)
@@ -271,6 +293,8 @@ def handle_pre_tool_use(event: dict) -> None:
                 "parameters": {"command": command},
             },
         )
+    except QuotaExceededError as exc:
+        _deny(f"AgentGuards monthly quota reached: {exc.user_message}")
     except Exception as exc:
         if _fail_open():
             print(f"AgentGuards: service unreachable ({exc}), allowing tool call (AGENTGUARDS_FAIL_OPEN=true)", file=sys.stderr)
@@ -284,7 +308,8 @@ def handle_pre_tool_use(event: dict) -> None:
     # is hard-blocked. Anything else is surfaced for approval ("ask") unless every
     # binary was already approved this session. The risk scorer ran first, so a
     # remembered binary still can't carry a destructive command through.
-    # The server composes the full structured panel; print it verbatim, then the command.
+    # The server composes the full structured panel (shield + heading + Decision/
+    # Reason/Severity); print it verbatim, then the command that was flagged.
     reason = result.get("reason") or "🛡️ [AgentGuards] Command blocked\nDecision: deny\nReason: policy - flagged by AgentGuards guardrails\nSeverity: high"
     shown = command if len(str(command)) <= 500 else str(command)[:500] + "..."
     if decision == "deny":

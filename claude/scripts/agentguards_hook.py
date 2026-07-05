@@ -30,9 +30,12 @@ Configure in ~/.claude/settings.json:
       }
     }
 
-The PostToolUse matcher covers both Bash (session-approval cache) and the built-in
-WebFetch/WebSearch tools, whose fetched content is scanned with use_case="web_fetch"
-and redacted if AgentGuards flags it.
+The PostToolUse matcher covers the built-in WebFetch/WebSearch tools, whose fetched
+content is scanned with use_case="web_fetch" and redacted if AgentGuards flags it.
+Bash commands get the same scan when they invoke a fetch binary (curl, wget, etc.) —
+this does NOT rely on the model cooperatively calling the MCP check_input tool; it is
+enforced here in the hook regardless of what the model does. Other Bash commands only
+update the session-approval cache.
 
 Environment variables (set in shell profile or inline):
     AGENTGUARDS_URL      Base URL of your AgentGuards instance (required)
@@ -49,7 +52,8 @@ import time
 import urllib.request
 import urllib.error
 
-# Block panels include a shield glyph (🛡️); avoid a non-UTF-8 locale crashing output.
+# Block panels include a shield glyph (🛡️); make sure a non-UTF-8 locale can't crash
+# the raw-stderr block path.
 for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(encoding="utf-8")
@@ -68,6 +72,18 @@ _APPROVALS_PATH = os.path.expanduser("~/.claude/agentguards_session_approvals.js
 _SESSION_TTL = 7 * 24 * 3600  # prune sessions older than this many seconds
 
 
+class QuotaExceededError(Exception):
+    """API returned 429 QUOTA_EXCEEDED — a real quota block, not a service outage.
+
+    Carries the human-readable message so the hook can show it verbatim instead of
+    routing it through the "service unreachable" fail-open/closed branch.
+    """
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.user_message = message
+
+
 def _post(path: str, payload: dict) -> dict:
     url = f"{AGENTGUARDS_URL}{path}"
     data = json.dumps(payload).encode()
@@ -80,8 +96,20 @@ def _post(path: str, payload: dict) -> dict:
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        return json.loads(resp.read())
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        # A 429 QUOTA_EXCEEDED is a deliberate block with a user-facing message —
+        # surface it as such rather than as an opaque transport error.
+        if exc.code == 429:
+            try:
+                body = json.loads(exc.read())
+            except Exception:
+                body = {}
+            if body.get("error") == "QUOTA_EXCEEDED":
+                raise QuotaExceededError(body.get("message") or "Monthly request quota reached.")
+        raise
 
 
 def _block(reason: str) -> None:
@@ -152,6 +180,13 @@ def _approved_binaries(session_id: str) -> set:
     return set(entry.get("binaries", []))
 
 
+_FETCH_BINARIES = {"curl", "wget", "http", "https", "fetch", "aria2c"}
+
+
+def _is_fetch_command(command: str) -> bool:
+    return any(b in _FETCH_BINARIES for b in _command_binaries(command))
+
+
 def _remember_binaries(session_id: str, binaries: list[str]) -> None:
     if not session_id or not binaries:
         return
@@ -197,6 +232,9 @@ def handle_user_prompt(event: dict) -> None:
 
     try:
         result = _post("/v1/guardrails/evaluate-input", {"text": prompt, "use_case": "claude_code"})
+    except QuotaExceededError as exc:
+        _block(f"""**[AgentGuards] Monthly quota reached**
+{exc.user_message}""")
     except Exception as exc:
         if _fail_open():
             print(f"AgentGuards: service unreachable ({exc}), allowing prompt (AGENTGUARDS_FAIL_OPEN=true)", file=sys.stderr)
@@ -230,6 +268,9 @@ def handle_pre_tool_use(event: dict) -> None:
             "/v1/actions/authorize",
             {"action": "shell_command", "tool": "Bash", "parameters": {"command": command}},
         )
+    except QuotaExceededError as exc:
+        _block(f"""**[AgentGuards] Monthly quota reached**
+{exc.user_message}""")
     except Exception as exc:
         if _fail_open():
             print(f"AgentGuards: service unreachable ({exc}), allowing tool call (AGENTGUARDS_FAIL_OPEN=true)", file=sys.stderr)
@@ -261,14 +302,18 @@ Set AGENTGUARDS_FAIL_OPEN=true to allow commands while the service is down."""
     if binaries and all(b in _approved_binaries(session_id) for b in binaries):
         _pre_tool("allow", "AgentGuards: approved earlier this session")
 
-    _pre_tool("ask", f"{reason}\n\n    {shown}")
+    _pre_tool(
+        "ask",
+        f"{reason}\n\n    {shown}",
+    )
 
 
 def _extract_web_text(event: dict) -> str:
-    """Pull the fetched content out of a WebFetch/WebSearch PostToolUse event.
+    """Pull the fetched content out of a WebFetch/WebSearch/Bash-fetch PostToolUse event.
 
-    WebFetch returns a markdown string; WebSearch returns a list of result dicts.
-    Claude Code names the result field "tool_response" (older builds: "tool_result").
+    WebFetch returns a markdown string; WebSearch returns a list of result dicts;
+    a Bash fetch command (curl/wget) returns a dict with a "stdout" key. Claude Code
+    names the result field "tool_response" (older builds: "tool_result").
     """
     response = event.get("tool_response")
     if response is None:
@@ -277,8 +322,8 @@ def _extract_web_text(event: dict) -> str:
     if isinstance(response, str):
         return response
     if isinstance(response, dict):
-        # Some result shapes wrap the text, e.g. {"result": "..."} or {"content": "..."}.
-        for key in ("result", "content", "text", "output"):
+        # Some result shapes wrap the text, e.g. {"result": "..."} or {"stdout": "..."}.
+        for key in ("result", "content", "text", "output", "stdout"):
             value = response.get(key)
             if isinstance(value, str):
                 return value
@@ -321,6 +366,11 @@ def handle_web_content(event: dict) -> None:
             "/v1/guardrails/evaluate-input",
             {"text": text, "use_case": "web_fetch", "channel": "claude_code"},
         )
+    except QuotaExceededError as exc:
+        _post_tool_block(
+            f"AgentGuards monthly quota reached — {exc.user_message}",
+            "[AgentGuards: web content withheld — monthly request quota reached]",
+        )
     except Exception as exc:
         if _fail_open():
             print(
@@ -351,11 +401,17 @@ def handle_post_tool_use(event: dict) -> None:
     if tool_name in ("WebFetch", "WebSearch"):
         handle_web_content(event)
         return
-    # A Bash command already ran (= it was allowed/approved), so remember its
-    # binaries for this session to skip re-asking next time.
     if tool_name == "Bash":
         command = event.get("tool_input", {}).get("command", "")
+        # A Bash command already ran (= it was allowed/approved), so remember its
+        # binaries for this session to skip re-asking next time.
         _remember_binaries(event.get("session_id", ""), _command_binaries(command))
+        # curl/wget etc. fetch web content the same way WebFetch does — scan it
+        # here too, deterministically. Do NOT rely on the model cooperatively
+        # calling the MCP check_input tool for this.
+        if _is_fetch_command(command):
+            handle_web_content(event)
+            return
     _allow()
 
 
