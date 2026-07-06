@@ -1,0 +1,21 @@
+{
+  "name": "agentguards-copilot",
+  "description": "LLM security guardrails for GitHub Copilot CLI — jailbreak detection, prompt-injection and web-content scanning, data-exfiltration blocking, and destructive-command authorization. Bundles enforcing hooks plus the AgentGuards MCP server.",
+  "version": "0.1.0",
+  "author": {
+    "name": "AgentGuards",
+    "email": "support@agentguards.co"
+  },
+  "license": "MIT",
+  "keywords": [
+    "security",
+    "guardrails",
+    "llm-security",
+    "prompt-injection",
+    "jailbreak",
+    "copilot"
+  ],
+  "hooks": "./hooks.json",
+  "mcpServers": "./.mcp.json",
+  "skills": "./skills"
+}

@@ -13,6 +13,7 @@ fail-open (availability-first) with a single environment variable.
 | [`agentguards-claude`](./claude) | Claude Code | MCP server + enforcing hooks (input, Bash, web-content) and security instructions. |
 | [`agentguards-codex`](./codex) | OpenAI Codex | Enforcing hooks (input, shell, web-content) + MCP server and security instructions. |
 | [`agentguards-gemini`](./gemini) | Gemini CLI | MCP server + enforcing hooks (input, tool-call, web-content) and security instructions. |
+| [`agentguards-copilot`](./copilot) | GitHub Copilot CLI | MCP server + enforcing hooks (input, shell, web-content) and security instructions. |
 
 ## Install (Claude Code)
 
@@ -65,6 +66,21 @@ export AGENTGUARDS_API_KEY=ag_your_token_here
 
 Add that to your shell profile and restart Gemini CLI. See
 [`gemini/README.md`](./gemini/README.md) for full configuration.
+
+## Install (GitHub Copilot CLI)
+
+```
+copilot plugin install alelaguard/agentguards-plugins:copilot
+```
+
+Then set your API key (get one at https://agentguards.co/dashboard/keys):
+
+```
+export AGENTGUARDS_API_KEY=ag_your_token_here
+```
+
+Add that to your shell profile and restart Copilot CLI. See
+[`copilot/README.md`](./copilot/README.md) for full configuration.
 
 ## License
 

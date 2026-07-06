@@ -1,0 +1,19 @@
+{
+  "hooks": {
+    "userPromptSubmitted": [
+      {
+        "command": "AGENTGUARDS_URL=\"${AGENTGUARDS_URL:-https://prod.agentguards.co}\" python3 \"${COPILOT_PLUGIN_ROOT}/scripts/agentguards_copilot_hook.py\" userPromptSubmitted"
+      }
+    ],
+    "preToolUse": [
+      {
+        "command": "AGENTGUARDS_URL=\"${AGENTGUARDS_URL:-https://prod.agentguards.co}\" python3 \"${COPILOT_PLUGIN_ROOT}/scripts/agentguards_copilot_hook.py\" preToolUse"
+      }
+    ],
+    "postToolUse": [
+      {
+        "command": "AGENTGUARDS_URL=\"${AGENTGUARDS_URL:-https://prod.agentguards.co}\" python3 \"${COPILOT_PLUGIN_ROOT}/scripts/agentguards_copilot_hook.py\" postToolUse"
+      }
+    ]
+  }
+}
