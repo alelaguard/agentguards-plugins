@@ -1,0 +1,12 @@
+{
+  "name": "agentguards-gemini",
+  "version": "0.1.0",
+  "mcpServers": {
+    "agentguards": {
+      "httpUrl": "https://prod.agentguards.co/mcp",
+      "headers": {
+        "X-API-Key": "${AGENTGUARDS_API_KEY}"
+      }
+    }
+  }
+}

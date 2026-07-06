@@ -12,6 +12,7 @@ fail-open (availability-first) with a single environment variable.
 |---|---|---|
 | [`agentguards-claude`](./claude) | Claude Code | MCP server + enforcing hooks (input, Bash, web-content) and security instructions. |
 | [`agentguards-codex`](./codex) | OpenAI Codex | Enforcing hooks (input, shell, web-content) + MCP server and security instructions. |
+| [`agentguards-gemini`](./gemini) | Gemini CLI | MCP server + enforcing hooks (input, tool-call, web-content) and security instructions. |
 
 ## Install (Claude Code)
 
@@ -45,6 +46,25 @@ export AGENTGUARDS_API_KEY=ag_your_token_here
 
 Add that to your shell profile and restart Codex. See
 [`codex/README.md`](./codex/README.md) for full configuration.
+
+## Install (Gemini CLI)
+
+Gemini CLI's `extensions install` only supports single-extension repos, so
+install by cloning and linking the subdirectory:
+
+```
+git clone https://github.com/alelaguard/agentguards-plugins.git
+gemini extensions link agentguards-plugins/gemini
+```
+
+Then set your API key (get one at https://agentguards.co/dashboard/keys):
+
+```
+export AGENTGUARDS_API_KEY=ag_your_token_here
+```
+
+Add that to your shell profile and restart Gemini CLI. See
+[`gemini/README.md`](./gemini/README.md) for full configuration.
 
 ## License
 
