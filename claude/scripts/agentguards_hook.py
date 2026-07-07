@@ -116,7 +116,11 @@ def _post(path: str, payload: dict) -> dict:
 def _block(reason: str) -> None:
     # Claude Code blocks ONLY on exit code 2 (stderr fed back to the model / shown
     # to the user). Exit 1 is a *non-blocking* error — the prompt/tool would proceed.
-    print(reason, file=sys.stderr)
+    # Claude Code prefixes our stderr with its own "[<hook command>]: " echo on the
+    # same line — a leading newline pushes our panel onto its own line instead of
+    # trailing that prefix, so it reads at the same left margin as the rest of the
+    # panel (Decision/Reason/Severity) instead of visually overlapping.
+    print("\n" + reason, file=sys.stderr)
     sys.exit(2)
 
 
