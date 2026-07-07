@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "AGENTGUARDS_URL=\"${AGENTGUARDS_URL:-https://prod.agentguards.co}\" python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/agentguards_hook.py\" UserPromptSubmit"
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/agentguards_hook.py\" UserPromptSubmit"
           }
         ]
       }
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "AGENTGUARDS_URL=\"${AGENTGUARDS_URL:-https://prod.agentguards.co}\" python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/agentguards_hook.py\" PreToolUse"
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/agentguards_hook.py\" PreToolUse"
           }
         ]
       }
@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "AGENTGUARDS_URL=\"${AGENTGUARDS_URL:-https://prod.agentguards.co}\" python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/agentguards_hook.py\" PostToolUse"
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/agentguards_hook.py\" PostToolUse"
           }
         ]
       }
