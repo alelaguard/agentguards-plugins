@@ -38,7 +38,8 @@ enforced here in the hook regardless of what the model does. Other Bash commands
 update the session-approval cache.
 
 Environment variables (set in shell profile or inline):
-    AGENTGUARDS_URL      Base URL of your AgentGuards instance (required)
+    AGENTGUARDS_URL      Base URL of your AgentGuards instance (optional,
+                         defaults to the hosted https://prod.agentguards.co)
     AGENTGUARDS_API_KEY  Your ag_ API token (required)
 """
 
@@ -60,7 +61,7 @@ for _stream in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-AGENTGUARDS_URL = os.getenv("AGENTGUARDS_URL", "").rstrip("/")
+AGENTGUARDS_URL = os.getenv("AGENTGUARDS_URL", "https://prod.agentguards.co").rstrip("/")
 AGENTGUARDS_API_KEY = os.getenv("AGENTGUARDS_API_KEY", "")
 
 # Per-session approval cache. A command that reaches PostToolUse actually ran
@@ -431,9 +432,10 @@ def main() -> None:
     if not AGENTGUARDS_URL or not AGENTGUARDS_API_KEY:
         _block(
             """**[AgentGuards] Not configured**
-AGENTGUARDS_URL and AGENTGUARDS_API_KEY must both be set for the hook to run.
-The hook is fail-closed, so it blocks until you configure them in the
-~/.claude/settings.json "env" block."""
+AGENTGUARDS_API_KEY must be set for the hook to run (AGENTGUARDS_URL is
+optional, defaults to the hosted https://prod.agentguards.co). The hook is
+fail-closed, so it blocks until you configure it in the ~/.claude/settings.json
+"env" block."""
         )
 
     if event_type == "UserPromptSubmit":
