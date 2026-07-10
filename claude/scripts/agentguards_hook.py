@@ -23,7 +23,7 @@ Configure in ~/.claude/settings.json:
             "command": "python3 ~/.claude/agentguards_hook.py PreToolUse"}]
         }],
         "PostToolUse": [{
-          "matcher": "Bash|WebFetch|WebSearch",
+          "matcher": "Bash|WebFetch|WebSearch|Write|Edit|MultiEdit",
           "hooks": [{"type": "command",
             "command": "python3 ~/.claude/agentguards_hook.py PostToolUse"}]
         }]
@@ -36,6 +36,11 @@ Bash commands get the same scan when they invoke a fetch binary (curl, wget, etc
 this does NOT rely on the model cooperatively calling the MCP check_input tool; it is
 enforced here in the hook regardless of what the model does. Other Bash commands only
 update the session-approval cache.
+
+Write/Edit/MultiEdit are scanned for SAST findings and secrets (semgrep + gitleaks,
+run server-side on a separate host) via /v1/code/scan. This is a paid, opt-in
+feature — off by default, so most tenants will get a quiet 403 here that's treated
+as "allow" (see ForbiddenError), not a block.
 
 Environment variables (set in shell profile or inline):
     AGENTGUARDS_URL      Base URL of your AgentGuards instance (optional,
@@ -85,7 +90,17 @@ class QuotaExceededError(Exception):
         self.user_message = message
 
 
-def _post(path: str, payload: dict) -> dict:
+class ForbiddenError(Exception):
+    """API returned 403 — a deliberate access-control response (e.g. a feature the
+    tenant hasn't enabled/purchased), not a transient outage. Callers that hit this
+    should not treat it like a service failure (i.e. should not fail-closed-block)."""
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.detail = message
+
+
+def _post(path: str, payload: dict, *, timeout: int = 10) -> dict:
     url = f"{AGENTGUARDS_URL}{path}"
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
@@ -98,7 +113,7 @@ def _post(path: str, payload: dict) -> dict:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as exc:
         # A 429 QUOTA_EXCEEDED is a deliberate block with a user-facing message —
@@ -110,6 +125,12 @@ def _post(path: str, payload: dict) -> dict:
                 body = {}
             if body.get("error") == "QUOTA_EXCEEDED":
                 raise QuotaExceededError(body.get("message") or "Monthly request quota reached.")
+        if exc.code == 403:
+            try:
+                body = json.loads(exc.read())
+            except Exception:
+                body = {}
+            raise ForbiddenError(body.get("detail") or "Forbidden")
         raise
 
 
@@ -400,11 +421,90 @@ def handle_web_content(event: dict) -> None:
     _allow()
 
 
+_WRITE_TOOLS = {"Write", "Edit", "MultiEdit"}
+# Outer timeout (hook -> API). Kept above the API's inner API->VPS timeout (5s)
+# so a slow-but-successful scan isn't abandoned mid-flight (which would fail-open
+# and allow a write the scan flagged). Still well under the prompt path's budget.
+_CODE_SCAN_TIMEOUT = 8
+
+
+def _extract_write_content(event: dict) -> tuple[str | None, str]:
+    """Return (file_path, written_content) for a Write/Edit/MultiEdit PostToolUse event."""
+    tool_input = event.get("tool_input", {}) or {}
+    file_path = tool_input.get("file_path")
+    if "content" in tool_input:  # Write
+        return file_path, str(tool_input.get("content") or "")
+    if "new_string" in tool_input:  # Edit
+        return file_path, str(tool_input.get("new_string") or "")
+    edits = tool_input.get("edits")  # MultiEdit
+    if isinstance(edits, list):
+        content = "\n".join(str(e.get("new_string", "")) for e in edits if isinstance(e, dict))
+        return file_path, content
+    return file_path, ""
+
+
+def handle_code_scan(event: dict) -> None:
+    # Scan what the agent just wrote/edited for SAST findings and secrets. This is
+    # a paid, opt-in feature (off by default) — a 403 here means the tenant hasn't
+    # enabled it, which is not a service outage and must never block the write.
+    file_path, content = _extract_write_content(event)
+    if not content.strip():
+        _allow()
+
+    print(f"AgentGuards: scanning {file_path or 'file'} for security issues...", file=sys.stderr)
+
+    if not AGENTGUARDS_URL or not AGENTGUARDS_API_KEY:
+        if _fail_open():
+            _allow()
+        _post_tool_block(
+            "AgentGuards not configured (fail-closed)",
+            "[AgentGuards: code scan withheld — hook not configured]",
+        )
+
+    try:
+        result = _post(
+            "/v1/code/scan",
+            {"content": content, "file_path": file_path},
+            timeout=_CODE_SCAN_TIMEOUT,
+        )
+    except ForbiddenError:
+        # code_scan isn't enabled for this tenant — allow silently, same as if
+        # the check had never run.
+        _allow()
+    except QuotaExceededError as exc:
+        _post_tool_block(
+            f"AgentGuards monthly quota reached — {exc.user_message}",
+            "[AgentGuards: code scan withheld — monthly request quota reached]",
+        )
+    except Exception as exc:
+        if _fail_open():
+            print(
+                f"AgentGuards: code scan unreachable ({exc}), allowing write (AGENTGUARDS_FAIL_OPEN=true)",
+                file=sys.stderr,
+            )
+            _allow()
+        _post_tool_block(
+            f"AgentGuards unreachable ({exc}) (fail-closed)",
+            "[AgentGuards: code scan withheld — service unreachable]",
+        )
+
+    decision = result.get("decision", "allow")
+    if decision == "block":
+        message = result.get("message") or "🛡️ [AgentGuards] Code scan blocked\nDecision: block"
+        _post_tool_block(message, "[AgentGuards: write blocked — see the scan findings above]")
+    if decision == "warn" and result.get("message"):
+        print(result["message"], file=sys.stderr)
+    _allow()
+
+
 def handle_post_tool_use(event: dict) -> None:
     tool_name = event.get("tool_name", "")
     # Scan content pulled by the built-in web tools.
     if tool_name in ("WebFetch", "WebSearch"):
         handle_web_content(event)
+        return
+    if tool_name in _WRITE_TOOLS:
+        handle_code_scan(event)
         return
     if tool_name == "Bash":
         command = event.get("tool_input", {}).get("command", "")
