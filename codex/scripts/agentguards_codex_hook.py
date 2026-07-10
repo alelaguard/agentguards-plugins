@@ -9,6 +9,12 @@ blocked, and an approved command isn't re-asked again the same session.
 
 At PostToolUse, output from web-fetching shell commands (curl, wget, etc.) is
 scanned with use_case="web_fetch" and withheld if AgentGuards flags it.
+apply_patch (Codex's file-edit tool) content is scanned the same way via
+/v1/code/scan for SAST findings and secrets — a paid, opt-in feature (off by
+default), so most tenants get a quiet 403 treated as allow, not a block.
+NOTE: apply_patch's tool_input field name for the patch body is inferred
+(tried: patch/input/diff/content) — verify against a real Codex session
+before relying on this in production.
 
 Setup:
     1. Save this file as ~/.codex/agentguards_codex_hook.py
@@ -71,7 +77,17 @@ class QuotaExceededError(Exception):
         self.user_message = message
 
 
-def _post(path: str, payload: dict) -> dict:
+class ForbiddenError(Exception):
+    """API returned 403 — a deliberate access-control response (e.g. a feature the
+    tenant hasn't enabled/purchased), not a transient outage. Callers that hit this
+    should not treat it like a service failure (i.e. should not fail-closed-block)."""
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.detail = message
+
+
+def _post(path: str, payload: dict, *, timeout: int = 10) -> dict:
     req = urllib.request.Request(
         f"{AGENTGUARDS_URL}{path}",
         data=json.dumps(payload).encode(),
@@ -79,7 +95,7 @@ def _post(path: str, payload: dict) -> dict:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as exc:
         if exc.code == 429:
@@ -89,6 +105,12 @@ def _post(path: str, payload: dict) -> dict:
                 body = {}
             if body.get("error") == "QUOTA_EXCEEDED":
                 raise QuotaExceededError(body.get("message") or "Monthly request quota reached.")
+        if exc.code == 403:
+            try:
+                body = json.loads(exc.read())
+            except Exception:
+                body = {}
+            raise ForbiddenError(body.get("detail") or "Forbidden")
         raise
 
 
@@ -322,11 +344,68 @@ def handle_pre_tool_use(event: dict) -> None:
     _ask(f"{reason}\n\n    {shown}")
 
 
+# Codex CLI's built-in file-edit tool; its patch content must be scanned.
+_WRITE_TOOL_NAMES = {"apply_patch"}
+# Outer timeout (hook -> API). Kept above the API's inner API->VPS timeout (5s)
+# so a slow-but-successful scan isn't abandoned mid-flight (which would fail-open
+# and allow a write the scan flagged). Still well under the prompt path's budget.
+_CODE_SCAN_TIMEOUT = 8
+
+
+def _extract_write_content(tool_input: dict) -> tuple[str | None, str]:
+    file_path = tool_input.get("file_path") or tool_input.get("path")
+    for key in ("patch", "input", "diff", "content"):
+        value = tool_input.get(key)
+        if isinstance(value, str) and value:
+            return file_path, value
+    return file_path, ""
+
+
+def _scan_code(tool_input: dict) -> None:
+    # Paid, opt-in feature (off by default) — a 403 means the tenant hasn't
+    # enabled it, which must be treated as allow, not as an outage.
+    file_path, content = _extract_write_content(tool_input)
+    if not content.strip():
+        return
+
+    print(f"AgentGuards: scanning {file_path or 'file'} for security issues...", file=sys.stderr)
+
+    try:
+        result = _post(
+            "/v1/code/scan",
+            {"content": content, "file_path": file_path},
+            timeout=_CODE_SCAN_TIMEOUT,
+        )
+    except ForbiddenError:
+        return
+    except QuotaExceededError as exc:
+        _block_output(f"AgentGuards monthly quota reached: {exc.user_message} Write withheld.")
+    except Exception as exc:
+        if _fail_open():
+            print(
+                f"AgentGuards: code scan unreachable ({exc}), allowing write (AGENTGUARDS_FAIL_OPEN=true)",
+                file=sys.stderr,
+            )
+            return
+        _block_output(f"AgentGuards unreachable ({exc}) — write withheld (fail-closed).")
+
+    decision = result.get("decision", "allow")
+    if decision == "block":
+        _block_output(result.get("message") or "[AgentGuards] Code scan blocked")
+    if decision == "warn" and result.get("message"):
+        print(result["message"], file=sys.stderr)
+
+
 def handle_post_tool_use(event: dict) -> None:
-    command = (event.get("tool_input", {}) or {}).get("command")
+    tool_name = event.get("tool_name", "")
+    tool_input = event.get("tool_input", {}) or {}
+    command = tool_input.get("command")
     # Scan output from web-fetching shell commands before the model sees it.
     if command and _is_fetch_command(command):
         _scan_web_output(_extract_tool_response(event))
+    # Scan file edits for SAST findings and secrets.
+    if tool_name in _WRITE_TOOL_NAMES:
+        _scan_code(tool_input)
     # Remember approved binaries for this session to skip re-asking next time.
     if command:
         _remember_binaries(event.get("session_id", ""), _command_binaries(command))

@@ -12,6 +12,11 @@ run_shell_command output is scanned the same way when the command invokes a fetc
 binary (curl, wget, etc.) — this does NOT rely on the model cooperatively calling
 the MCP check_input tool; it is enforced here regardless of what the model does.
 
+write_file/replace output is also scanned at AfterTool for SAST findings and
+secrets (semgrep + gitleaks, run server-side on a separate host) via
+/v1/code/scan. This is a paid, opt-in feature — off by default, so most
+tenants get a quiet 403 that's treated as "allow" (see ForbiddenError).
+
 Install:
     cp scripts/agentguards_gemini_hook.py ~/.gemini/agentguards_gemini_hook.py
 
@@ -77,7 +82,17 @@ class QuotaExceededError(Exception):
         self.user_message = message
 
 
-def _post(path: str, payload: dict) -> dict:
+class ForbiddenError(Exception):
+    """API returned 403 — a deliberate access-control response (e.g. a feature the
+    tenant hasn't enabled/purchased), not a transient outage. Callers that hit this
+    should not treat it like a service failure (i.e. should not fail-closed-block)."""
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.detail = message
+
+
+def _post(path: str, payload: dict, *, timeout: int = 10) -> dict:
     url = f"{AGENTGUARDS_URL}{path}"
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
@@ -90,7 +105,7 @@ def _post(path: str, payload: dict) -> dict:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as exc:
         # A 429 QUOTA_EXCEEDED is a deliberate block with a user-facing message —
@@ -102,6 +117,12 @@ def _post(path: str, payload: dict) -> dict:
                 body = {}
             if body.get("error") == "QUOTA_EXCEEDED":
                 raise QuotaExceededError(body.get("message") or "Monthly request quota reached.")
+        if exc.code == 403:
+            try:
+                body = json.loads(exc.read())
+            except Exception:
+                body = {}
+            raise ForbiddenError(body.get("detail") or "Forbidden")
         raise
 
 
@@ -280,6 +301,77 @@ def _scan_web_content(tool_name: str, tool_response) -> None:
         _block(detail, "[AgentGuards] Web content withheld")
 
 
+# Gemini's built-in write tools whose output must be scanned for SAST/secrets.
+_WRITE_TOOLS = ("write_file", "replace")
+# Outer timeout (hook -> API). Kept above the API's inner API->VPS timeout (5s)
+# so a slow-but-successful scan isn't abandoned mid-flight (which would fail-open
+# and allow a write the scan flagged). Still well under the prompt path's budget.
+_CODE_SCAN_TIMEOUT = 8
+
+
+def _extract_write_content(tool_input: dict) -> tuple[str | None, str]:
+    """Return (file_path, written_content) for a write_file/replace tool call."""
+    file_path = tool_input.get("file_path") or tool_input.get("path")
+    if "content" in tool_input:  # write_file
+        return file_path, str(tool_input.get("content") or "")
+    if "new_string" in tool_input:  # replace
+        return file_path, str(tool_input.get("new_string") or "")
+    return file_path, ""
+
+
+def _scan_code(tool_input: dict) -> None:
+    # Runs at AfterTool for the built-in write tools. Gemini's AfterTool honors
+    # {"decision": "deny"}, so a bad verdict genuinely withholds — same as
+    # _scan_web_content. This is a paid, opt-in feature (off by default), so a
+    # 403 here means the tenant hasn't enabled it and must be treated as allow,
+    # not as an outage.
+    file_path, content = _extract_write_content(tool_input)
+    if not content.strip():
+        return
+
+    print(f"AgentGuards: scanning {file_path or 'file'} for security issues...", file=sys.stderr)
+
+    if not AGENTGUARDS_URL or not AGENTGUARDS_API_KEY:
+        if _fail_open():
+            return
+        _block(
+            "AgentGuards not configured and the hook is fail-closed.",
+            "[AgentGuards] Code scan withheld — hook not configured (fail-closed).",
+        )
+
+    try:
+        result = _post(
+            "/v1/code/scan",
+            {"content": content, "file_path": file_path},
+            timeout=_CODE_SCAN_TIMEOUT,
+        )
+    except ForbiddenError:
+        return
+    except QuotaExceededError as exc:
+        _block(
+            f"AgentGuards monthly quota reached: {exc.user_message}",
+            f"[AgentGuards] Monthly quota reached — {exc.user_message}",
+        )
+    except Exception as exc:
+        if _fail_open():
+            print(
+                f"AgentGuards: code scan unreachable ({exc}), allowing write (AGENTGUARDS_FAIL_OPEN=true)",
+                file=sys.stderr,
+            )
+            return
+        _block(
+            f"AgentGuards is unreachable ({exc}) and the hook is fail-closed.",
+            "[AgentGuards] Code scan withheld — service unreachable (fail-closed).",
+        )
+
+    decision = result.get("decision", "allow")
+    if decision == "block":
+        message = result.get("message") or "[AgentGuards] Code scan blocked"
+        _block(message, message)
+    if decision == "warn" and result.get("message"):
+        print(result["message"], file=sys.stderr)
+
+
 def handle_before_agent(event: dict) -> None:
     prompt = event.get("prompt", "")
     if not prompt.strip():
@@ -388,6 +480,8 @@ def handle_after_tool(event: dict) -> None:
         _scan_web_content(tool_name, event.get("tool_response"))
     elif tool_name in _SHELL_TOOLS and _is_fetch_command(str(tool_input.get("command") or "")):
         _scan_web_content(tool_name, event.get("tool_response"))
+    elif tool_name in _WRITE_TOOLS:
+        _scan_code(tool_input)
     session_id = _session_id(event)
     _remember_keys(session_id, _tool_cache_keys(tool_name, tool_input))
     _allow()
