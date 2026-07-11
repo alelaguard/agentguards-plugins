@@ -1,9 +1,16 @@
 name: Publish Claude plugin to npm
 
-# Publishes claude/ as @agentguards/claude-plugin to the npm registry.
-# Trigger manually from the Actions tab ("Run workflow"), or by pushing a
-# tag like `claude-v0.2.4`. Requires an NPM_TOKEN repo secret (an npm
-# "Automation" access token for an account with @agentguards org publish rights).
+# Publishes claude/ as @agentguards/claude-plugin to the npm registry via
+# npm Trusted Publishing (OIDC) — no long-lived NPM_TOKEN is stored anywhere.
+# GitHub Actions proves its identity to npm directly, so the only setup is a
+# one-time "trusted publisher" link configured on npmjs.com for this package
+# (repo: alelaguard/agentguards-plugins, workflow: npm-publish.yml).
+#
+# Long-lived publish tokens are being deprecated by npm (2FA-bypass GATs lose
+# publish rights ~Jan 2027), which is why we use OIDC instead.
+#
+# Trigger manually from the Actions tab ("Run workflow"), or by pushing a tag
+# like `claude-v0.2.4`.
 
 on:
   workflow_dispatch: {}
@@ -13,7 +20,7 @@ on:
 
 permissions:
   contents: read
-  id-token: write # enables npm provenance
+  id-token: write # required for npm Trusted Publishing (OIDC)
 
 jobs:
   publish:
@@ -24,8 +31,8 @@ jobs:
         with:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
+      - name: Upgrade npm (Trusted Publishing needs npm >= 11.5.1)
+        run: npm install -g npm@latest
       - name: Publish
         working-directory: claude
         run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
