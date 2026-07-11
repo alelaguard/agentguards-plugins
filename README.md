@@ -32,6 +32,21 @@ Add that to your shell profile and restart Claude Code, or run
 `/agentguards:setup`. See [`claude/README.md`](./claude/README.md) for full
 configuration.
 
+**Alternative: install via npm.** The `claude/` plugin is also published as
+[`@agentguards/claude-plugin`](https://www.npmjs.com/package/@agentguards/claude-plugin)
+for programmatic use — pinning an exact version in `package.json`, CI
+provisioning, or embedding the hook script in your own tooling — outside of
+Claude Code's interactive `/plugin` flow:
+
+```
+npm install @agentguards/claude-plugin
+```
+
+Note this only fetches the plugin's files; it does **not** register hooks,
+skills, or the MCP server with Claude Code (that wiring happens through
+`/plugin install` above). Use the npm package when you need the raw files,
+use `/plugin install` when you want it running in Claude Code.
+
 ## Install (OpenAI Codex)
 
 ```
