@@ -9,7 +9,16 @@
     {
       "name": "agentguards-claude",
       "source": "./claude",
-      "description": "LLM security guardrails for Claude Code: jailbreak/prompt-injection detection, web-content scanning, data-exfiltration blocking, and destructive-command authorization."
+      "description": "LLM security guardrails for Claude Code: jailbreak/prompt-injection detection, web-content scanning, data-exfiltration blocking, and destructive-command authorization.",
+      "category": "Developer Tools",
+      "keywords": [
+        "security",
+        "guardrails",
+        "prompt-injection",
+        "jailbreak-detection",
+        "llm-security",
+        "mcp"
+      ]
     }
   ]
 }
