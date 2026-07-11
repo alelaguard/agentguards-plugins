@@ -33,13 +33,13 @@ Add that to your shell profile and restart Claude Code, or run
 configuration.
 
 **Alternative: install via npm.** The `claude/` plugin is also published as
-[`@agentguards/claude-plugin`](https://www.npmjs.com/package/@agentguards/claude-plugin)
+[`@agentguardsco/claude-plugin`](https://www.npmjs.com/package/@agentguardsco/claude-plugin)
 for programmatic use — pinning an exact version in `package.json`, CI
 provisioning, or embedding the hook script in your own tooling — outside of
 Claude Code's interactive `/plugin` flow:
 
 ```
-npm install @agentguards/claude-plugin
+npm install @agentguardsco/claude-plugin
 ```
 
 Note this only fetches the plugin's files; it does **not** register hooks,

@@ -1,5 +1,5 @@
 {
-  "name": "@agentguards/claude-plugin",
+  "name": "@agentguardsco/claude-plugin",
   "version": "0.2.4",
   "description": "LLM security guardrails for Claude Code — jailbreak detection, prompt-injection and web-content scanning, data-exfiltration blocking, and destructive-command authorization. Bundles the AgentGuards MCP server plus enforcing hooks.",
   "license": "MIT",
