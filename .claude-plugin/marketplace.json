@@ -8,10 +8,7 @@
   "plugins": [
     {
       "name": "agentguards-claude",
-      "source": {
-        "source": "npm",
-        "package": "@agentguards/claude-plugin"
-      },
+      "source": "./claude",
       "description": "LLM security guardrails for Claude Code: jailbreak/prompt-injection detection, web-content scanning, data-exfiltration blocking, and destructive-command authorization."
     }
   ]
