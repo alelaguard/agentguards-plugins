@@ -1,6 +1,6 @@
 name: Publish Claude plugin to npm
 
-# Publishes claude/ as @agentguards/claude-plugin to the npm registry via
+# Publishes claude/ as @agentguardsco/claude-plugin to the npm registry via
 # npm Trusted Publishing (OIDC) — no long-lived NPM_TOKEN is stored anywhere.
 # GitHub Actions proves its identity to npm directly, so the only setup is a
 # one-time "trusted publisher" link configured on npmjs.com for this package
