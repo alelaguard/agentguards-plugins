@@ -1,0 +1,34 @@
+{
+  "name": "@agentguards/claude-plugin",
+  "version": "0.2.4",
+  "description": "LLM security guardrails for Claude Code — jailbreak detection, prompt-injection and web-content scanning, data-exfiltration blocking, and destructive-command authorization. Bundles the AgentGuards MCP server plus enforcing hooks.",
+  "license": "MIT",
+  "homepage": "https://agentguards.co",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alelaguard/agentguards-plugins",
+    "directory": "claude"
+  },
+  "author": {
+    "name": "AgentGuards",
+    "email": "support@agentguards.co",
+    "url": "https://agentguards.co"
+  },
+  "keywords": [
+    "claude-code",
+    "claude-code-plugin",
+    "llm-security",
+    "guardrails",
+    "prompt-injection",
+    "jailbreak-detection",
+    "mcp"
+  ],
+  "files": [
+    ".claude-plugin",
+    "hooks",
+    "scripts",
+    "skills",
+    ".mcp.json",
+    "README.md"
+  ]
+}
