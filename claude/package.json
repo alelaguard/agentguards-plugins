@@ -6,7 +6,7 @@
   "homepage": "https://agentguards.co",
   "repository": {
     "type": "git",
-    "url": "https://github.com/alelaguard/agentguards-plugins",
+    "url": "git+https://github.com/alelaguard/agentguards-plugins.git",
     "directory": "claude"
   },
   "author": {
