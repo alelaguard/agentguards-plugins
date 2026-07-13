@@ -1,6 +1,6 @@
 {
   "name": "@agentguardsco/opencode-plugin",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "LLM security guardrails for OpenCode — jailbreak detection, prompt-injection and web-content scanning, and destructive-command authorization. Bundles enforcing hooks plus the AgentGuards MCP server.",
   "license": "MIT",
   "type": "module",
