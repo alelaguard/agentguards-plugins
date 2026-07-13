@@ -38,14 +38,19 @@
 //   npm:    `opencode plugin @agentguardsco/opencode-plugin`
 //
 // Environment variables:
-//   AGENTGUARDS_URL       Base URL of your AgentGuards instance (required)
 //   AGENTGUARDS_API_KEY   Your ag_ API token (required)
+//   AGENTGUARDS_URL       Base URL, only for a self-hosted instance
+//                         (default: https://prod.agentguards.co)
 //   AGENTGUARDS_FAIL_OPEN Set to "true" to allow instead of block when the
 //                         AgentGuards API is unreachable (default: fail-closed)
 
 import type { Plugin } from "@opencode-ai/plugin"
 
-const AGENTGUARDS_URL = (process.env.AGENTGUARDS_URL || "").replace(/\/+$/, "")
+// Must default to prod: the API key is the only thing users are told to set (see
+// the README/dashboard). Requiring AGENTGUARDS_URL too would fail-closed-block
+// every message for anyone following the documented install. Same default as the
+// Codex hook.
+const AGENTGUARDS_URL = (process.env.AGENTGUARDS_URL || "https://prod.agentguards.co").replace(/\/+$/, "")
 const AGENTGUARDS_API_KEY = process.env.AGENTGUARDS_API_KEY || ""
 
 function failOpen(): boolean {
@@ -54,6 +59,15 @@ function failOpen(): boolean {
 
 function configured(): boolean {
   return Boolean(AGENTGUARDS_URL && AGENTGUARDS_API_KEY)
+}
+
+// OpenCode surfaces a thrown hook error to the user as an opaque "Unexpected
+// server error" -- the real message only lands in the log. Print the panel to
+// stderr (which does reach the user's terminal) before throwing, so a block
+// shows its reason instead of looking like a crash.
+function blockWith(message: string): never {
+  console.error(message)
+  throw new Error(message)
 }
 
 // A 429 QUOTA_EXCEEDED is a deliberate block with a user-facing message --
@@ -168,7 +182,7 @@ function extractPromptText(parts: Array<{ type?: string; text?: string }>): stri
 }
 
 const NOT_CONFIGURED_MESSAGE =
-  "**[AgentGuards] Not configured**\nAGENTGUARDS_URL and AGENTGUARDS_API_KEY must both be set for the plugin to run.\nThe plugin is fail-closed, so it blocks until you set them in your environment."
+  "**[AgentGuards] Not configured**\nAGENTGUARDS_API_KEY must be set for the plugin to run.\nGet a key at https://agentguards.co/dashboard/keys, then:\n\n    export AGENTGUARDS_API_KEY=ag_your_token_here\n\nThe plugin is fail-closed, so it blocks until you set it."
 
 export const AgentGuards: Plugin = async () => {
   return {
@@ -178,7 +192,7 @@ export const AgentGuards: Plugin = async () => {
 
       if (!configured()) {
         if (failOpen()) return
-        throw new Error(NOT_CONFIGURED_MESSAGE)
+        blockWith(NOT_CONFIGURED_MESSAGE)
       }
 
       let result: any
@@ -186,10 +200,10 @@ export const AgentGuards: Plugin = async () => {
         result = await post("/v1/guardrails/evaluate-input", { text, use_case: "opencode" })
       } catch (err) {
         if (err instanceof QuotaExceededError) {
-          throw new Error(`**[AgentGuards] Monthly quota reached**\n${err.userMessage}`)
+          blockWith(`**[AgentGuards] Monthly quota reached**\n${err.userMessage}`)
         }
         if (failOpen()) return
-        throw new Error(
+        blockWith(
           `**[AgentGuards] Request blocked**\nAgentGuards is unreachable (${err}) and the plugin is fail-closed.\nSet AGENTGUARDS_FAIL_OPEN=true to allow prompts while the service is down.`,
         )
       }
@@ -200,7 +214,7 @@ export const AgentGuards: Plugin = async () => {
           result.message ??
           "🛡️ [AgentGuards] Prompt blocked\nDecision: block\nReason: policy - flagged by AgentGuards guardrails\nSeverity: high"
         const flagged = result.flagged_input
-        throw new Error(flagged ? `${message}\n\n    ${flagged}` : message)
+        blockWith(flagged ? `${message}\n\n    ${flagged}` : message)
       }
     },
 
@@ -210,7 +224,7 @@ export const AgentGuards: Plugin = async () => {
 
       if (!configured()) {
         if (failOpen()) return
-        throw new Error(NOT_CONFIGURED_MESSAGE)
+        blockWith(NOT_CONFIGURED_MESSAGE)
       }
 
       let result: any
@@ -222,10 +236,10 @@ export const AgentGuards: Plugin = async () => {
         })
       } catch (err) {
         if (err instanceof QuotaExceededError) {
-          throw new Error(`**[AgentGuards] Monthly quota reached**\n${err.userMessage}`)
+          blockWith(`**[AgentGuards] Monthly quota reached**\n${err.userMessage}`)
         }
         if (failOpen()) return
-        throw new Error(
+        blockWith(
           `**[AgentGuards] Command blocked**\nAgentGuards is unreachable (${err}) and the plugin is fail-closed.\nSet AGENTGUARDS_FAIL_OPEN=true to allow commands while the service is down.`,
         )
       }
@@ -239,7 +253,7 @@ export const AgentGuards: Plugin = async () => {
 
       const shown = command.length > 500 ? `${command.slice(0, 500)}...` : command
       if (decision === "deny") {
-        throw new Error(`${reason}\n\n    ${shown}`)
+        blockWith(`${reason}\n\n    ${shown}`)
       }
       if (decision === "allow") return
 
@@ -253,7 +267,7 @@ export const AgentGuards: Plugin = async () => {
       // this command was already approved earlier in the session.
       const binaries = commandBinaries(command)
       if (binaries.length > 0 && hasApprovedBinaries(input.sessionID, binaries)) return
-      throw new Error(
+      blockWith(
         `${reason}\n\n    ${shown}\n\nRe-run after confirming you want to proceed with this command.`,
       )
     },
