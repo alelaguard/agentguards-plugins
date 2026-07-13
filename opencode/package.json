@@ -1,0 +1,39 @@
+{
+  "name": "@agentguardsco/opencode-plugin",
+  "version": "0.1.0",
+  "description": "LLM security guardrails for OpenCode — jailbreak detection, prompt-injection and web-content scanning, and destructive-command authorization. Bundles enforcing hooks plus the AgentGuards MCP server.",
+  "license": "MIT",
+  "type": "module",
+  "homepage": "https://agentguards.co",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alelaguard/agentguards-plugins.git",
+    "directory": "opencode"
+  },
+  "author": {
+    "name": "AgentGuards",
+    "email": "support@agentguards.co",
+    "url": "https://agentguards.co"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "llm-security",
+    "guardrails",
+    "prompt-injection",
+    "jailbreak-detection",
+    "mcp"
+  ],
+  "main": "plugin/agentguards-opencode-plugin.ts",
+  "exports": {
+    ".": "./plugin/agentguards-opencode-plugin.ts"
+  },
+  "files": [
+    "plugin",
+    "skills",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.17.0"
+  }
+}
