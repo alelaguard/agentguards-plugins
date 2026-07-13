@@ -14,6 +14,7 @@ fail-open (availability-first) with a single environment variable.
 | [`agentguards-codex`](./codex) | OpenAI Codex | Enforcing hooks (input, shell, web-content) + MCP server and security instructions. |
 | [`agentguards-gemini`](./gemini) | Gemini CLI | MCP server + enforcing hooks (input, tool-call, web-content) and security instructions. |
 | [`agentguards-copilot`](./copilot) | GitHub Copilot CLI | MCP server + enforcing hooks (input, shell, web-content) and security instructions. |
+| [`@agentguardsco/opencode-plugin`](./opencode) | OpenCode | Enforcing plugin (prompt, `bash`, web-content), + MCP server and security instructions. |
 
 ## Install (Claude Code)
 
@@ -96,6 +97,22 @@ export AGENTGUARDS_API_KEY=ag_your_token_here
 
 Add that to your shell profile and restart Copilot CLI. See
 [`copilot/README.md`](./copilot/README.md) for full configuration.
+
+## Install (OpenCode)
+
+```
+opencode plugin @agentguardsco/opencode-plugin
+```
+
+Then set your API key (get one at https://agentguards.co/dashboard/keys):
+
+```
+export AGENTGUARDS_API_KEY=ag_your_token_here
+```
+
+Add that to your shell profile and restart OpenCode. See
+[`opencode/README.md`](./opencode/README.md) for full configuration, including
+MCP server setup (a separate step for OpenCode, unlike the other agents above).
 
 ## License
 
