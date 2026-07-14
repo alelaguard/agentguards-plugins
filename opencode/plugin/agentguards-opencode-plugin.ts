@@ -3,17 +3,32 @@
 // Unlike the Claude Code / Codex / Gemini hooks (subprocesses reading one JSON
 // event from stdin per invocation), an OpenCode plugin is an in-process module
 // that stays loaded for the life of the `opencode` process. There is no stdout
-// JSON envelope protocol to speak: blocking a hook is `throw new Error(...)`,
-// allowing is returning normally, and `permission.ask` is answered by setting
+// JSON envelope protocol to speak: a tool hook blocks by throwing, allowing is
+// returning normally, and `permission.ask` is answered by setting
 // `output.status` directly.
+//
+// Two OpenCode-specific constraints shape how a block is delivered (both
+// confirmed against the shipped 1.17.x binary, not the docs):
+//
+//   1. NEVER write a block message to stdout/stderr. The TUI is a full-screen
+//      renderer; a raw console.log/console.error is painted straight over its
+//      framebuffer and corrupts the display. User-facing messages go through
+//      `client.tui.showToast()`, which the TUI renders properly.
+//
+//   2. NEVER throw from "chat.message". OpenCode runs plugin hooks under
+//      Effect.promise (`Plugin.trigger` has no try/catch), so a rejection
+//      becomes an unrecoverable *defect*, which the server's catch-all flattens
+//      into a generic 500. The TUI then shows "Failed to send prompt /
+//      Unexpected server error" -- our reason is discarded and the block looks
+//      like a crash. A prompt is blocked by rewriting `output.parts` in place
+//      instead (see withholdPrompt).
 //
 // Hooks implemented (confirmed against @opencode-ai/plugin 1.17.18's shipped
 // dist/index.d.ts, not just the public docs page, which omits "chat.message"
 // and "permission.ask" entirely):
 //   - "chat.message"       -- the UserPromptSubmit equivalent: scans the user's
-//                             prompt before the model sees it. Confirmed live
-//                             (2026-07-13): throwing here halts the turn before
-//                             the model is ever called.
+//                             prompt before the model sees it, and withholds it
+//                             from the model if flagged.
 //   - "tool.execute.before" -- authorizes `bash` calls before they run. A
 //                             `require-approval`/`escalate`/`dry-run` verdict is
 //                             a hard block with a "re-run to confirm" message
@@ -44,7 +59,9 @@
 //   AGENTGUARDS_FAIL_OPEN Set to "true" to allow instead of block when the
 //                         AgentGuards API is unreachable (default: fail-closed)
 
-import type { Plugin } from "@opencode-ai/plugin"
+import type { Plugin, PluginInput } from "@opencode-ai/plugin"
+
+type OpencodeClient = PluginInput["client"]
 
 // Must default to prod: the API key is the only thing users are told to set (see
 // the README/dashboard). Requiring AGENTGUARDS_URL too would fail-closed-block
@@ -61,13 +78,86 @@ function configured(): boolean {
   return Boolean(AGENTGUARDS_URL && AGENTGUARDS_API_KEY)
 }
 
-// OpenCode surfaces a thrown hook error to the user as an opaque "Unexpected
-// server error" -- the real message only lands in the log. Print the panel to
-// stderr (which does reach the user's terminal) before throwing, so a block
-// shows its reason instead of looking like a crash.
-function blockWith(message: string): never {
-  console.error(message)
-  throw new Error(message)
+// Which channel can actually show the user a block message depends on how
+// OpenCode was started, and the two modes are mutually exclusive:
+//
+//   TUI (`opencode`)          the plugin runs inside the TUI worker. The TUI is a
+//                             full-screen renderer, so a console write is painted
+//                             straight over its framebuffer and corrupts the
+//                             display. A toast is the only safe channel.
+//   headless (`opencode run`) there is no TUI to render a toast, and stdout IS
+//                             the output, so printing the panel is both safe
+//                             (no framebuffer to corrupt) and necessary.
+//
+// This has to be read off argv, because nothing else distinguishes them: the
+// toast POST is queued for a TUI that may never exist and reports success in
+// BOTH modes, so it cannot be used as a probe (confirmed live, 2026-07-14).
+// argv[2] is checked only in the `run` case; matching argv loosely would misfire
+// on a prompt that merely contains the word "tui".
+const ARGV1 = process.argv[1] ?? ""
+const IS_TUI = /[\\/]tui[\\/]/.test(ARGV1) // .../src/cli/tui/worker.js
+const IS_HEADLESS_RUN = /[\\/]index\.js$/.test(ARGV1) && process.argv[2] === "run"
+
+// Show a toast, hard-bounded and never throwing: showToast is served off a
+// control queue that only an attached TUI drains, so without one it never
+// completes, and a block must not stall the turn waiting on cosmetics.
+async function toast(client: OpencodeClient, title: string, message: string): Promise<void> {
+  try {
+    await client.tui.showToast({
+      body: { title, message, variant: "error", duration: 12_000 },
+      signal: AbortSignal.timeout(2_000),
+    })
+  } catch {
+    // No TUI attached, or it didn't answer. The caller has other channels.
+  }
+}
+
+// Show `panel` through whichever channel is safe in this mode. Under any other
+// mode (`opencode serve`, or a future one this detection doesn't know about) it
+// stays quiet: those clients render the transcript, which already carries the
+// block panel in place of the prompt (see withholdPrompt).
+async function notify(client: OpencodeClient, title: string, panel: string): Promise<void> {
+  if (IS_TUI) await toast(client, title, oneLine(panel))
+  else if (IS_HEADLESS_RUN) console.error(`\n${panel}\n`)
+}
+
+// A toast is a single-line notification, so collapse the multi-line panel into
+// one line -- the full panel still goes into the transcript.
+function oneLine(message: string): string {
+  return message
+    .split("\n")
+    .map((line) => line.replace(/\*\*/g, "").trim())
+    .filter(Boolean)
+    .join(" — ")
+}
+
+// Block a prompt WITHOUT throwing (see the header note: a throw here is
+// flattened into an opaque 500 and the reason is lost). OpenCode hands the hook
+// the very same `parts` array it goes on to send to the model, so rewriting the
+// text in place withholds the original prompt from the model. The array identity
+// must be preserved -- reassigning `output.parts` would be dropped, since the
+// caller kept its own reference to the array we were handed.
+//
+// This is the load-bearing half of a block: the turn is also aborted (see
+// abortTurn), but that is best-effort, and this is what guarantees the model
+// cannot see the blocked text even if the abort loses the race.
+//
+// The replacement doubles as the transcript record of the block -- it is what the
+// TUI renders in place of the user's message -- so it is written to read as a
+// notice, and states only what is true. An earlier draft asserted "you cannot see
+// the prompt" and instructed the model to relay the notice verbatim; on the
+// fallback path the model disputed it ("no prompt injection was detected... your
+// message is visible to me as-is") and invented a bogus URL to report false
+// positives. Don't give it a claim to argue with or a message to paraphrase.
+function withholdPrompt(parts: any[], panel: string): void {
+  const notice = `${panel}\n\n(Prompt withheld by AgentGuards and not delivered. No response is required.)`
+
+  let first = true
+  for (const part of parts) {
+    if (part?.type !== "text" || typeof part.text !== "string") continue
+    part.text = first ? notice : "[withheld by AgentGuards]"
+    first = false
+  }
 }
 
 // A 429 QUOTA_EXCEEDED is a deliberate block with a user-facing message --
@@ -184,15 +274,66 @@ function extractPromptText(parts: Array<{ type?: string; text?: string }>): stri
 const NOT_CONFIGURED_MESSAGE =
   "**[AgentGuards] Not configured**\nAGENTGUARDS_API_KEY must be set for the plugin to run.\nGet a key at https://agentguards.co/dashboard/keys, then:\n\n    export AGENTGUARDS_API_KEY=ag_your_token_here\n\nThe plugin is fail-closed, so it blocks until you set it."
 
-export const AgentGuards: Plugin = async () => {
+export const AgentGuards: Plugin = async ({ client }) => {
+  // End the turn, so a blocked prompt spends no tokens and the model says nothing.
+  //
+  // The generation registers its abort controller only AFTER "chat.message"
+  // returns, so an abort issued inline from the hook is a silent no-op -- it
+  // answers 200 `true` and the model runs anyway (confirmed live, 2026-07-14).
+  // It has to be fired once the turn is actually in flight, hence the poll.
+  //
+  // Bounded, and stops the instant the session goes idle: an abort fired blindly
+  // after the turn is already dead would land on whatever the user submits next.
+  async function abortTurn(sessionID: string): Promise<void> {
+    for (let attempt = 0; attempt < 12; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 100))
+
+      let status: string | undefined
+      try {
+        const res: any = await client.session.status({ signal: AbortSignal.timeout(2_000) })
+        status = res?.data?.[sessionID]?.type
+      } catch {
+        return
+      }
+      if (status !== "busy" && status !== "retry") return // Turn is over.
+
+      try {
+        await client.session.abort({ path: { id: sessionID }, signal: AbortSignal.timeout(2_000) })
+      } catch {
+        return
+      }
+    }
+  }
+
+  // Withhold the prompt from the model and tell the user why. Returns rather
+  // than throws -- see the header note on why "chat.message" must never throw.
+  async function blockPrompt(sessionID: string, parts: any[], panel: string): Promise<void> {
+    withholdPrompt(parts, panel)
+    await notify(client, "AgentGuards — prompt blocked", panel)
+
+    // Deliberately NOT awaited: the turn cannot become abortable until this hook
+    // returns, so awaiting here would deadlock the very turn we are trying to end.
+    void abortTurn(sessionID)
+  }
+
+  // Block a tool call. Throwing IS correct here (unlike "chat.message"):
+  // OpenCode turns a tool-hook rejection into a tool error, which is fed back to
+  // the model and rendered in the tool block, so the reason reaches the user
+  // either way -- the toast is just the faster, louder copy of it.
+  async function blockTool(panel: string): Promise<never> {
+    await toast(client, "AgentGuards — command blocked", oneLine(panel))
+    throw new Error(panel)
+  }
+
   return {
-    "chat.message": async (_input, output) => {
-      const text = extractPromptText((output.parts as any[]) || [])
+    "chat.message": async (input, output) => {
+      const parts = (output.parts as any[]) || []
+      const text = extractPromptText(parts)
       if (!text.trim()) return
 
       if (!configured()) {
         if (failOpen()) return
-        blockWith(NOT_CONFIGURED_MESSAGE)
+        return blockPrompt(input.sessionID, parts, NOT_CONFIGURED_MESSAGE)
       }
 
       let result: any
@@ -200,10 +341,12 @@ export const AgentGuards: Plugin = async () => {
         result = await post("/v1/guardrails/evaluate-input", { text, use_case: "opencode" })
       } catch (err) {
         if (err instanceof QuotaExceededError) {
-          blockWith(`**[AgentGuards] Monthly quota reached**\n${err.userMessage}`)
+          return blockPrompt(input.sessionID, parts, `**[AgentGuards] Monthly quota reached**\n${err.userMessage}`)
         }
         if (failOpen()) return
-        blockWith(
+        return blockPrompt(
+          input.sessionID,
+          parts,
           `**[AgentGuards] Request blocked**\nAgentGuards is unreachable (${err}) and the plugin is fail-closed.\nSet AGENTGUARDS_FAIL_OPEN=true to allow prompts while the service is down.`,
         )
       }
@@ -213,8 +356,9 @@ export const AgentGuards: Plugin = async () => {
         const message =
           result.message ??
           "🛡️ [AgentGuards] Prompt blocked\nDecision: block\nReason: policy - flagged by AgentGuards guardrails\nSeverity: high"
-        const flagged = result.flagged_input
-        blockWith(flagged ? `${message}\n\n    ${flagged}` : message)
+        // NB: never echo result.flagged_input back into the prompt -- that would
+        // feed the exact text we just blocked straight to the model.
+        return blockPrompt(input.sessionID, parts, message)
       }
     },
 
@@ -224,7 +368,7 @@ export const AgentGuards: Plugin = async () => {
 
       if (!configured()) {
         if (failOpen()) return
-        blockWith(NOT_CONFIGURED_MESSAGE)
+        await blockTool(NOT_CONFIGURED_MESSAGE)
       }
 
       let result: any
@@ -236,10 +380,10 @@ export const AgentGuards: Plugin = async () => {
         })
       } catch (err) {
         if (err instanceof QuotaExceededError) {
-          blockWith(`**[AgentGuards] Monthly quota reached**\n${err.userMessage}`)
+          await blockTool(`**[AgentGuards] Monthly quota reached**\n${err.userMessage}`)
         }
         if (failOpen()) return
-        blockWith(
+        await blockTool(
           `**[AgentGuards] Command blocked**\nAgentGuards is unreachable (${err}) and the plugin is fail-closed.\nSet AGENTGUARDS_FAIL_OPEN=true to allow commands while the service is down.`,
         )
       }
@@ -253,7 +397,7 @@ export const AgentGuards: Plugin = async () => {
 
       const shown = command.length > 500 ? `${command.slice(0, 500)}...` : command
       if (decision === "deny") {
-        blockWith(`${reason}\n\n    ${shown}`)
+        await blockTool(`${reason}\n\n    ${shown}`)
       }
       if (decision === "allow") return
 
@@ -267,7 +411,7 @@ export const AgentGuards: Plugin = async () => {
       // this command was already approved earlier in the session.
       const binaries = commandBinaries(command)
       if (binaries.length > 0 && hasApprovedBinaries(input.sessionID, binaries)) return
-      blockWith(
+      await blockTool(
         `${reason}\n\n    ${shown}\n\nRe-run after confirming you want to proceed with this command.`,
       )
     },
