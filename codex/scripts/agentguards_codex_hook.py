@@ -1,11 +1,20 @@
 #!/usr/bin/env python3
 """Codex CLI hook for AgentGuards guardrails.
 
-Handles UserPromptSubmit, PreToolUse and PostToolUse hooks. Reads JSON from
-stdin, calls the AgentGuards REST API, and either lets the action continue or
-asks the user to approve it. Prompt-injection / policy hits on the prompt are
-blocked outright; shell commands are surfaced for approval rather than silently
-blocked, and an approved command isn't re-asked again the same session.
+Handles UserPromptSubmit, PreToolUse, PermissionRequest and PostToolUse hooks.
+Reads JSON from stdin, calls the AgentGuards REST API, and either lets the action
+continue, hard-blocks it, or defers to the user. Prompt-injection / policy hits on
+the prompt are blocked outright.
+
+Shell commands: PreToolUse hard-denies what the authorizer rejects. Codex's
+PreToolUse hook parses but does NOT support permissionDecision:"ask" and a hook
+cannot force an approval prompt, so a borderline command is deferred (exit 0) to
+Codex's own approval flow — the user is prompted whenever approval_policy is
+`untrusted`/`on-request` (in `full-auto`/`never` it runs ungated). PermissionRequest
+then rides that real prompt when it appears: it hard-denies re-flagged commands with
+the AgentGuards panel as the message and auto-approves binaries already cleared this
+session, so the user isn't re-asked. Note PermissionRequest only fires when Codex was
+already going to ask, so it does not close the `full-auto`/`never` gap.
 
 At PostToolUse, output from web-fetching shell commands (curl, wget, etc.) is
 scanned with use_case="web_fetch" and withheld if AgentGuards flags it.
@@ -237,19 +246,16 @@ def _scan_web_output(content: str) -> None:
 
 
 def _ask(reason: str) -> None:
-    # Surface the command for user approval instead of blocking it outright.
-    print(
-        json.dumps(
-            {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "ask",
-                    "permissionDecisionReason": reason,
-                }
-            }
-        )
-    )
-    sys.exit(0)
+    # Hand the decision to the user. Codex's PreToolUse hook parses but does NOT
+    # support permissionDecision:"ask" (it errors: "unsupported permissionDecision"),
+    # and a hook cannot force an approval prompt of its own. The only way to let the
+    # user choose is to return no decision (exit 0, no stdout): Codex then falls back
+    # to its own approval_policy and prompts the user whenever that policy is
+    # `untrusted` or `on-request`. In `full-auto`/`never` it runs without asking.
+    # We print the AgentGuards panel to stderr so the flag is visible in the hook log
+    # even when Codex doesn't stop to prompt.
+    print(reason, file=sys.stderr)
+    _continue()
 
 
 def _deny(reason: str) -> None:
@@ -272,6 +278,36 @@ def _allow_tool(reason: str) -> None:
     # Codex has no "allow" permissionDecision (it rejects it) — let the command run
     # by exiting 0 with no output, so Codex proceeds with its normal flow.
     _continue()
+
+
+def _permission_allow() -> None:
+    # PermissionRequest: auto-approve so Codex doesn't stop to ask the user.
+    print(
+        json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PermissionRequest",
+                    "decision": {"behavior": "allow"},
+                }
+            }
+        )
+    )
+    sys.exit(0)
+
+
+def _permission_deny(message: str) -> None:
+    # PermissionRequest: hard-deny the request; `message` is shown to the user.
+    print(
+        json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PermissionRequest",
+                    "decision": {"behavior": "deny", "message": message},
+                }
+            }
+        )
+    )
+    sys.exit(0)
 
 
 def handle_user_prompt(event: dict) -> None:
@@ -342,6 +378,50 @@ def handle_pre_tool_use(event: dict) -> None:
     if binaries and all(b in _approved_binaries(session_id) for b in binaries):
         _allow_tool("AgentGuards: approved earlier this session")
     _ask(f"{reason}\n\n    {shown}")
+
+
+def handle_permission_request(event: dict) -> None:
+    # Fires only when Codex is already about to prompt the user for approval
+    # (shell escalation, managed-network, etc.); it never runs for auto-allowed
+    # commands and cannot create a prompt that wouldn't otherwise happen. Here we
+    # let the AgentGuards verdict ride that real approval decision: hard-deny what
+    # the authorizer rejects (with our panel as the message), silently approve a
+    # binary the user already cleared this session, and otherwise defer so the user
+    # makes the call at Codex's normal prompt.
+    tool_name = event.get("tool_name", "")
+    tool_input = event.get("tool_input", {}) or {}
+    command = tool_input.get("command")
+    session_id = event.get("session_id", "")
+    # Only shell commands go through the action authorizer; defer apply_patch / MCP
+    # tool approvals to Codex's normal prompt.
+    if not command:
+        _continue()
+    try:
+        result = _post(
+            "/v1/actions/authorize",
+            {
+                "action": "shell_command",
+                "tool": tool_name or "shell",
+                "parameters": {"command": command},
+            },
+        )
+    except Exception:
+        # Quota/outage/missing-key: the user is already being asked, so don't
+        # hard-block their approval — let Codex's normal prompt continue.
+        _continue()
+    decision = result.get("decision", "allow")
+    reason = result.get("reason") or "🛡️ [AgentGuards] Command blocked\nDecision: deny\nReason: policy - flagged by AgentGuards guardrails\nSeverity: high"
+    shown = command if len(str(command)) <= 500 else str(command)[:500] + "..."
+    if decision == "deny":
+        _permission_deny(f"{reason}\n\n    {shown}")
+    binaries = _command_binaries(command)
+    if binaries and all(b in _approved_binaries(session_id) for b in binaries):
+        _permission_allow()
+    # authorize=allow or borderline: hand the decision to the user. Echo the panel
+    # to stderr so the flag is visible alongside Codex's approval prompt.
+    if decision != "allow":
+        print(f"{reason}\n\n    {shown}", file=sys.stderr)
+    _continue()
 
 
 # Codex CLI's built-in file-edit tool; its patch content must be scanned.
@@ -420,6 +500,11 @@ def main() -> None:
         _continue()
     if event_type == "PostToolUse":
         handle_post_tool_use(event)
+        return
+    if event_type == "PermissionRequest":
+        # Runs while the user is already being asked; on a missing key the
+        # authorize call fails and the handler defers, so don't fail-closed here.
+        handle_permission_request(event)
         return
     if not _api_key():
         # Fail-closed: refuse until the token is configured.
