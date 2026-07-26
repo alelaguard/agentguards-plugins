@@ -492,6 +492,37 @@ export const AgentGuards: Plugin = async ({ client }) => {
       }
 
       const decision = result.decision ?? "allow"
+
+      // `redact` is not `block`. A PERSON hit on a fetched page is usually a real name
+      // that genuinely is there -- an author byline, a maintainer handle -- so the
+      // detector is right, and withholding the whole page over one surname destroys
+      // the fetch for nothing. The service already returned the page with those spans
+      // replaced, so hand THAT back: the PII never reaches the model, content survives.
+      //
+      // Only `redact` earns this. block/escalate mean an injection payload is present,
+      // where the dangerous part is the text itself and partial content is still unsafe.
+      const redacted = result.redacted_text
+      // Defence in depth: only take this path when every FAILING check is one that
+      // redaction actually resolves. The server should never pair a `redact` aggregate
+      // with a failing injection check, but this is the code handing content to the
+      // model -- it must not be one server-side regression away from passing an
+      // injection through.
+      const failing = (result.checks ?? []).filter((c: any) => c?.passed === false)
+      const PII_CHECKS = ["presidio", "pii_detection", "secret_detection"]
+      const onlyPii =
+        failing.length > 0 && failing.every((c: any) => PII_CHECKS.includes(c?.check_name))
+      if (decision === "redact" && typeof redacted === "string" && redacted.trim() && onlyPii) {
+        const types: string[] = []
+        for (const check of failing) {
+          for (const t of check?.metadata?.pii_types ?? []) {
+            if (!types.includes(String(t))) types.push(String(t))
+          }
+        }
+        const what = types.length ? ` (${types.join(", ")})` : ""
+        output.output = `${redacted}\n\n[AgentGuards redacted sensitive values${what}; the rest is intact.]`
+        return
+      }
+
       if (decision !== "allow") {
         output.output = "[AgentGuards: web content withheld -- flagged by guardrails]"
       }

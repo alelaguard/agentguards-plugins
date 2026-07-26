@@ -290,9 +290,44 @@ def _scan_web_content(tool_name: str, tool_response) -> None:
             "[AgentGuards] Web content withheld — service unreachable (fail-closed).",
         )
 
-    # Any non-allow aggregate (redact/safe-complete-only included) means the
-    # service flagged the content — withhold it rather than passing the original.
     decision = result.get("decision", "allow")
+
+    # `redact` is not `block`. A PERSON hit on a fetched page is usually a real name
+    # that is genuinely there — an author byline, a maintainer handle — so withholding
+    # the whole page over one surname destroys the fetch for nothing.
+    #
+    # AfterTool has no replace-without-denying field: per the hooks reference, the only
+    # substitution channel is decision:"deny" + `reason`, whose text replaces the tool
+    # result sent to the model. So the sanitised page rides in `reason` and does reach
+    # the agent. It is labelled a deny; that is a Gemini protocol limit, not our intent.
+    redacted_text = result.get("redacted_text")
+    failing = [c for c in (result.get("checks") or []) if not c.get("passed", True)]
+    # Defence in depth: only take this path when every failing check is one that
+    # redaction actually resolves, so a server-side regression can't route an
+    # injection verdict through the redaction branch.
+    only_pii = bool(failing) and all(
+        c.get("check_name") in {"presidio", "pii_detection", "secret_detection"} for c in failing
+    )
+    if (
+        decision == "redact"
+        and isinstance(redacted_text, str)
+        and redacted_text.strip()
+        and only_pii
+    ):
+        types: list[str] = []
+        for check in result.get("checks") or []:
+            if check.get("passed", True):
+                continue
+            for pii_type in (check.get("metadata") or {}).get("pii_types") or []:
+                if str(pii_type) not in types:
+                    types.append(str(pii_type))
+        what = f" ({', '.join(types)})" if types else ""
+        _block(
+            f"{redacted_text}\n\n[AgentGuards redacted sensitive values{what} from this "
+            "content. The rest of the result is intact and safe to use.]",
+            f"[AgentGuards] Redacted sensitive values{what} — content otherwise intact",
+        )
+
     if decision not in ("allow",):
         # Server composes the full structured panel; print it + a snippet of the content.
         message = result.get("message") or "🛡️ [AgentGuards] Web content blocked\nDecision: block\nReason: policy - flagged by AgentGuards guardrails\nSeverity: high"
