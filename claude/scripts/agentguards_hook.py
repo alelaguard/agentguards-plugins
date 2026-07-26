@@ -43,8 +43,7 @@ feature — off by default, so most tenants will get a quiet 403 here that's tre
 as "allow" (see ForbiddenError), not a block.
 
 Environment variables (set in shell profile or inline):
-    AGENTGUARDS_URL      Base URL of your AgentGuards instance (optional,
-                         defaults to the hosted https://prod.agentguards.co)
+    AGENTGUARDS_URL      Base URL of your AgentGuards instance (required)
     AGENTGUARDS_API_KEY  Your ag_ API token (required)
 """
 
@@ -66,7 +65,7 @@ for _stream in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-AGENTGUARDS_URL = os.getenv("AGENTGUARDS_URL", "https://prod.agentguards.co").rstrip("/")
+AGENTGUARDS_URL = os.getenv("AGENTGUARDS_URL", "").rstrip("/")
 AGENTGUARDS_API_KEY = os.getenv("AGENTGUARDS_API_KEY", "")
 
 # Per-session approval cache. A command that reaches PostToolUse actually ran
@@ -137,11 +136,7 @@ def _post(path: str, payload: dict, *, timeout: int = 10) -> dict:
 def _block(reason: str) -> None:
     # Claude Code blocks ONLY on exit code 2 (stderr fed back to the model / shown
     # to the user). Exit 1 is a *non-blocking* error — the prompt/tool would proceed.
-    # Claude Code prefixes our stderr with its own "[<hook command>]: " echo on the
-    # same line — a leading newline pushes our panel onto its own line instead of
-    # trailing that prefix, so it reads at the same left margin as the rest of the
-    # panel (Decision/Reason/Severity) instead of visually overlapping.
-    print("\n" + reason, file=sys.stderr)
+    print(reason, file=sys.stderr)
     sys.exit(2)
 
 
@@ -169,6 +164,55 @@ def _post_tool_block(reason: str, redacted: str) -> None:
         )
     )
     sys.exit(0)
+
+
+def _post_tool_redact(redacted: str, note: str) -> None:
+    # Same `updatedToolOutput` swap as _post_tool_block, but WITHOUT "decision": "block"
+    # — the model is meant to use this content, it just gets the sanitised copy. Emitting
+    # a block here would defeat the point and withhold the page anyway. Docs confirm
+    # updatedToolOutput applies on its own; the redaction notice rides in
+    # additionalContext rather than being appended to the content, so it can never be
+    # mistaken for part of the fetched page.
+    print(
+        json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PostToolUse",
+                    "updatedToolOutput": redacted,
+                    "additionalContext": note,
+                }
+            }
+        )
+    )
+    sys.exit(0)
+
+
+def _redacted_entity_types(result: dict) -> list[str]:
+    """PII type names from the checks that fired, for the trailing redaction note."""
+    types: list[str] = []
+    for check in result.get("checks") or []:
+        if check.get("passed", True):
+            continue
+        for pii_type in (check.get("metadata") or {}).get("pii_types") or []:
+            if pii_type not in types:
+                types.append(str(pii_type))
+    return types
+
+
+# Checks whose failure redaction genuinely resolves: the sensitive span is replaced and
+# what is left is safe. Any OTHER failing check means something redaction does not fix.
+_PII_CHECKS = {"presidio", "pii_detection", "secret_detection"}
+
+
+def _only_pii_failed(result: dict) -> bool:
+    """True when every failing check is one redaction actually resolves.
+
+    Defence in depth. The server should never emit a `redact` aggregate alongside a
+    failing injection check, but this hook is the thing handing content to the model —
+    it should not be one server-side regression away from passing an injection through.
+    """
+    failing = [c for c in (result.get("checks") or []) if not c.get("passed", True)]
+    return bool(failing) and all(c.get("check_name") in _PII_CHECKS for c in failing)
 
 
 def _fail_open() -> bool:
@@ -409,9 +453,31 @@ def handle_web_content(event: dict) -> None:
             "[AgentGuards: web content withheld — service unreachable]",
         )
 
-    # Any non-allow aggregate (redact/safe-complete-only included) means the
-    # service flagged the content — withhold it rather than passing the original.
     decision = result.get("decision", "allow")
+
+    # `redact` is not `block`. A PERSON hit on a fetched page is usually a real name
+    # that genuinely is there — an author byline, a maintainer handle — so the detector
+    # is right and withholding the whole page over one surname destroys the fetch for
+    # nothing. The service already returned the page with those spans replaced, so pass
+    # THAT through: the PII never reaches the model, and the content survives.
+    #
+    # Only `redact` earns this. block/escalate mean an injection payload is present,
+    # where the dangerous part is the text itself and partial content is still unsafe.
+    redacted_text = result.get("redacted_text")
+    if (
+        decision == "redact"
+        and isinstance(redacted_text, str)
+        and redacted_text.strip()
+        and _only_pii_failed(result)
+    ):
+        pii_types = _redacted_entity_types(result)
+        what = f" ({', '.join(pii_types)})" if pii_types else ""
+        _post_tool_redact(
+            redacted_text,
+            f"AgentGuards redacted sensitive values{what} from this content. "
+            "The rest of the result is intact and safe to use.",
+        )
+
     if decision not in ("allow",):
         # Server composes the full structured panel; print it + a snippet of the content.
         message = result.get("message") or "🛡️ [AgentGuards] Web content blocked\nDecision: block\nReason: policy - flagged by AgentGuards guardrails\nSeverity: high"
@@ -536,10 +602,9 @@ def main() -> None:
     if not AGENTGUARDS_URL or not AGENTGUARDS_API_KEY:
         _block(
             """**[AgentGuards] Not configured**
-AGENTGUARDS_API_KEY must be set for the hook to run (AGENTGUARDS_URL is
-optional, defaults to the hosted https://prod.agentguards.co). The hook is
-fail-closed, so it blocks until you configure it in the ~/.claude/settings.json
-"env" block."""
+AGENTGUARDS_URL and AGENTGUARDS_API_KEY must both be set for the hook to run.
+The hook is fail-closed, so it blocks until you configure them in the
+~/.claude/settings.json "env" block."""
         )
 
     if event_type == "UserPromptSubmit":

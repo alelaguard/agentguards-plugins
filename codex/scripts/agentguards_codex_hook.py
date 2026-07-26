@@ -220,6 +220,59 @@ def _block_output(reason: str) -> None:
     sys.exit(0)
 
 
+def _redact_output(redacted: str, pii_types: list[str]) -> None:
+    """Hand the sanitised page back through the one channel Codex actually honours.
+
+    Do NOT reach for `updatedMCPToolOutput` here even though it names exactly this use
+    case: Codex parses it, marks the hook run FAILED, and then continues normal
+    processing of the tool result — i.e. the ORIGINAL unredacted content reaches the
+    model. An unsupported field is worse than no field; it fails open.
+    """
+    what = f" ({', '.join(pii_types)})" if pii_types else ""
+    print(
+        json.dumps(
+            {
+                "decision": "block",
+                "reason": (
+                    f"{redacted}\n\n[AgentGuards redacted sensitive values{what} from this "
+                    "content. The rest of the result is intact and safe to use.]"
+                ),
+                "hookSpecificOutput": {
+                    "hookEventName": "PostToolUse",
+                    "additionalContext": (
+                        f"AgentGuards redacted sensitive values{what} from the fetched "
+                        "content. The remaining content is intact — use it normally."
+                    ),
+                },
+            }
+        )
+    )
+    sys.exit(0)
+
+
+# Checks whose failure redaction genuinely resolves: the sensitive span is replaced
+# and what is left is safe. Any OTHER failing check means something redaction can't fix.
+_PII_CHECKS = {"presidio", "pii_detection", "secret_detection"}
+
+
+def _only_pii_failed(result: dict) -> bool:
+    """True when every failing check is one redaction actually resolves (defence in depth)."""
+    failing = [c for c in (result.get("checks") or []) if not c.get("passed", True)]
+    return bool(failing) and all(c.get("check_name") in _PII_CHECKS for c in failing)
+
+
+def _redacted_entity_types(result: dict) -> list[str]:
+    """PII type names from the checks that fired, for the redaction notice."""
+    types: list[str] = []
+    for check in result.get("checks") or []:
+        if check.get("passed", True):
+            continue
+        for pii_type in (check.get("metadata") or {}).get("pii_types") or []:
+            if str(pii_type) not in types:
+                types.append(str(pii_type))
+    return types
+
+
 def _scan_web_output(content: str) -> None:
     """Scan curl/wget output through the web_fetch guardrail; block if flagged."""
     if not content.strip():
@@ -237,6 +290,26 @@ def _scan_web_output(content: str) -> None:
             return
         _block_output(f"AgentGuards unreachable ({exc}) — fetched web content withheld (fail-closed).")
     decision = result.get("decision", "allow")
+
+    # `redact` is not `block`. A PERSON hit on a fetched page is usually a real name
+    # that is genuinely there — an author byline, a maintainer handle — so withholding
+    # the whole page over one surname destroys the fetch for nothing.
+    #
+    # Codex has no clean output-rewrite field: `updatedMCPToolOutput` is documented as
+    # "parsed but not supported yet". The one lever is decision:"block", which per the
+    # docs "replaces the tool result with that feedback, and continues the model from
+    # the hook-provided message" — so the sanitised page in `reason` does reach the
+    # model and the fetch survives. It is labelled a block; that is a Codex protocol
+    # limit, not our intent. Swap this for the real field when Codex ships it.
+    redacted_text = result.get("redacted_text")
+    if (
+        decision == "redact"
+        and isinstance(redacted_text, str)
+        and redacted_text.strip()
+        and _only_pii_failed(result)
+    ):
+        _redact_output(redacted_text, _redacted_entity_types(result))
+
     if decision not in ("allow",):
         # Server composes the full structured panel; print it + a snippet of the content.
         message = result.get("message") or "🛡️ [AgentGuards] Web content blocked\nDecision: block\nReason: policy - flagged by AgentGuards guardrails\nSeverity: high"
