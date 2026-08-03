@@ -51,6 +51,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import ssl
 import sys
 import time
 import urllib.request
@@ -92,6 +93,80 @@ class ForbiddenError(Exception):
         self.detail = message
 
 
+def _truthy(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _ssl_context():
+    """How to trust the AgentGuards server, or None to use Python's defaults.
+
+    A self-hosted appliance generates its own certificate on first boot — it has no DNS
+    name yet, so no public CA could have issued it one. Python rejects that by default,
+    which is correct behaviour and also the reason a brand-new appliance appears to
+    "refuse connections" when you point a hook at its IP address.
+
+    Returning None for the unconfigured case matters: urlopen treats a falsy context as
+    "use the default opener", so hosted users get exactly the verification they had
+    before this existed.
+
+    * ``AGENTGUARDS_CA_BUNDLE=/path/to/appliance.pem`` — still verifies, just against
+      the appliance's own certificate. That is pinning, and is stricter than a public CA.
+    * ``AGENTGUARDS_TLS_NO_VERIFY=true`` — no verification. Fine on a private subnet
+      while evaluating; anything on the path can then read and alter the traffic.
+    """
+    bundle = os.getenv("AGENTGUARDS_CA_BUNDLE", "").strip()
+    if bundle:
+        return ssl.create_default_context(cafile=os.path.expanduser(bundle))
+    if _truthy("AGENTGUARDS_TLS_NO_VERIFY"):
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+    return None
+
+
+def _is_tls_trust_error(exc: BaseException) -> bool:
+    """True when a request failed because the certificate was not trusted."""
+    if isinstance(exc, ssl.SSLCertVerificationError):
+        return True
+    reason = getattr(exc, "reason", None)
+    if isinstance(reason, ssl.SSLError):
+        return True
+    return "CERTIFICATE_VERIFY_FAILED" in str(exc)
+
+
+def _unreachable_remedy(exc: BaseException) -> str:
+    """The advice line for a failed call.
+
+    A certificate failure gets certificate advice. Suggesting AGENTGUARDS_FAIL_OPEN
+    here would be telling an operator to switch off screening because the transport was
+    not trusted — the wrong lever, and one that leaves the guardrail off long after the
+    real problem is fixed.
+    """
+    if _is_tls_trust_error(exc):
+        return (
+            "The server's certificate is not trusted. A self-hosted appliance signs "
+            "its own certificate on first boot, so this is expected until you install "
+            "a real one.\n"
+            "  • Best: install your own certificate at Settings -> TLS certificate, and "
+            "reach the appliance by the hostname it is issued for.\n"
+            "  • Or pin the appliance's certificate:\n"
+            "      openssl s_client -connect <host>:443 -showcerts </dev/null 2>/dev/null "
+            "| openssl x509 > ~/.agentguards-appliance.pem\n"
+            "      export AGENTGUARDS_CA_BUNDLE=~/.agentguards-appliance.pem\n"
+            "  • Evaluating on a private network: export AGENTGUARDS_TLS_NO_VERIFY=true"
+        )
+    code = getattr(exc, "code", None)
+    if code == 401:
+        return (
+            "The API key was rejected. Check AGENTGUARDS_API_KEY matches a key on this "
+            "instance (Admin console -> API keys), and that AGENTGUARDS_URL points at "
+            "the right one. Do not use AGENTGUARDS_FAIL_OPEN for this — the service is "
+            "healthy and turning off screening would not fix the credential."
+        )
+    return "Set AGENTGUARDS_FAIL_OPEN=true to allow requests while the service is down."
+
+
 def _post(path: str, payload: dict, *, timeout: int = 10) -> dict:
     url = f"{AGENTGUARDS_URL}{path}"
     data = json.dumps(payload).encode()
@@ -105,7 +180,7 @@ def _post(path: str, payload: dict, *, timeout: int = 10) -> dict:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as exc:
         # A 429 QUOTA_EXCEEDED is a deliberate block with a user-facing message —
@@ -425,7 +500,7 @@ def handle_before_agent(event: dict) -> None:
             _allow()
         _block(
             f"AgentGuards is unreachable ({exc}) and the hook is fail-closed. "
-            "Set AGENTGUARDS_FAIL_OPEN=true to allow prompts while the service is down.",
+            f"{_unreachable_remedy(exc)}",
             "[AgentGuards] Service unreachable — request blocked (fail-closed).",
         )
 
@@ -465,7 +540,7 @@ def handle_before_tool(event: dict) -> None:
             _allow()
         _block(
             f"AgentGuards is unreachable ({exc}) and the hook is fail-closed. "
-            "Set AGENTGUARDS_FAIL_OPEN=true to allow tool calls while the service is down.",
+            f"{_unreachable_remedy(exc)}",
             "[AgentGuards] Service unreachable — tool call blocked (fail-closed).",
         )
 

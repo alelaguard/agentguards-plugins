@@ -58,6 +58,10 @@
 //                         (default: https://prod.agentguards.co)
 //   AGENTGUARDS_FAIL_OPEN Set to "true" to allow instead of block when the
 //                         AgentGuards API is unreachable (default: fail-closed)
+//   AGENTGUARDS_TLS_NO_VERIFY  Set to "true" to skip TLS verification, for a
+//                         self-hosted appliance still on its first-boot
+//                         self-signed certificate. Prefer NODE_EXTRA_CA_CERTS
+//                         (see below), which keeps verification on.
 
 import type { Plugin, PluginInput } from "@opencode-ai/plugin"
 
@@ -70,8 +74,67 @@ type OpencodeClient = PluginInput["client"]
 const AGENTGUARDS_URL = (process.env.AGENTGUARDS_URL || "https://prod.agentguards.co").replace(/\/+$/, "")
 const AGENTGUARDS_API_KEY = process.env.AGENTGUARDS_API_KEY || ""
 
+function truthy(name: string): boolean {
+  return ["1", "true", "yes", "on"].includes((process.env[name] || "").trim().toLowerCase())
+}
+
 function failOpen(): boolean {
-  return ["1", "true", "yes", "on"].includes((process.env.AGENTGUARDS_FAIL_OPEN || "").trim().toLowerCase())
+  return truthy("AGENTGUARDS_FAIL_OPEN")
+}
+
+// A self-hosted appliance signs its own certificate on first boot -- it has no DNS name
+// yet, so no public CA could have issued it one -- and Node rejects that by default.
+// That is why a brand-new appliance looks like it is "refusing connections".
+//
+// Unlike the Python hooks, this cannot be scoped to our own requests: global fetch takes
+// no per-request CA, and reaching for undici's Agent would add a dependency to a plugin
+// that deliberately has none. NODE_TLS_REJECT_UNAUTHORIZED is process-wide, which is why
+// it is strictly opt-in -- it loosens TLS for everything else the OpenCode process does,
+// not just our calls.
+//
+// No warning is printed here on purpose: per rule 1 at the top of this file, anything
+// written to stdout/stderr is painted over the TUI's framebuffer. The operator set the
+// variable themselves, so this is their choice, not a silent downgrade.
+//
+// The better fix, which keeps verification on and needs no code here, is to pin the
+// appliance's certificate before launching opencode:
+//   openssl s_client -connect <host>:443 -showcerts </dev/null 2>/dev/null \
+//     | openssl x509 > ~/.agentguards-appliance.pem
+//   export NODE_EXTRA_CA_CERTS=~/.agentguards-appliance.pem
+if (truthy("AGENTGUARDS_TLS_NO_VERIFY")) {
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"
+}
+
+function isTlsTrustError(err: unknown): boolean {
+  const text = String((err as any)?.cause?.code || (err as any)?.code || err || "")
+  return /CERT|SELF_SIGNED|UNABLE_TO_VERIFY/i.test(text)
+}
+
+// A certificate failure gets certificate advice. Telling someone to set
+// AGENTGUARDS_FAIL_OPEN here would be telling them to switch off screening because the
+// transport was not trusted -- the wrong lever, and one that leaves the guardrail off
+// long after the real problem is fixed.
+function unreachableRemedy(err: unknown): string {
+  if (isTlsTrustError(err)) {
+    return (
+      "The server's certificate is not trusted. A self-hosted appliance signs its own " +
+      "certificate on first boot, so this is expected until you install a real one.\n" +
+      "  - Best: install your own certificate at Settings -> TLS certificate.\n" +
+      "  - Or pin this appliance's certificate, then restart opencode:\n" +
+      "      openssl s_client -connect <host>:443 -showcerts </dev/null 2>/dev/null | openssl x509 > ~/.agentguards-appliance.pem\n" +
+      "      export NODE_EXTRA_CA_CERTS=~/.agentguards-appliance.pem\n" +
+      "  - Evaluating on a private network: export AGENTGUARDS_TLS_NO_VERIFY=true"
+    )
+  }
+  if (String(err).includes("HTTP 401")) {
+    return (
+      "The API key was rejected. Check AGENTGUARDS_API_KEY matches a key on this " +
+      "instance, and that AGENTGUARDS_URL points at the right one. Do not use " +
+      "AGENTGUARDS_FAIL_OPEN for this - the service is healthy and turning off " +
+      "screening would not fix the credential."
+    )
+  }
+  return "Set AGENTGUARDS_FAIL_OPEN=true to allow while the service is down."
 }
 
 function configured(): boolean {
@@ -347,7 +410,7 @@ export const AgentGuards: Plugin = async ({ client }) => {
         return blockPrompt(
           input.sessionID,
           parts,
-          `**[AgentGuards] Request blocked**\nAgentGuards is unreachable (${err}) and the plugin is fail-closed.\nSet AGENTGUARDS_FAIL_OPEN=true to allow prompts while the service is down.`,
+          `**[AgentGuards] Request blocked**\nAgentGuards is unreachable (${err}) and the plugin is fail-closed.\n${unreachableRemedy(err)}`,
         )
       }
 
@@ -384,7 +447,7 @@ export const AgentGuards: Plugin = async ({ client }) => {
         }
         if (failOpen()) return
         await blockTool(
-          `**[AgentGuards] Command blocked**\nAgentGuards is unreachable (${err}) and the plugin is fail-closed.\nSet AGENTGUARDS_FAIL_OPEN=true to allow commands while the service is down.`,
+          `**[AgentGuards] Command blocked**\nAgentGuards is unreachable (${err}) and the plugin is fail-closed.\n${unreachableRemedy(err)}`,
         )
       }
 
