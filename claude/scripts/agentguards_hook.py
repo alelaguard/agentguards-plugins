@@ -146,6 +146,19 @@ def _is_tls_trust_error(exc: BaseException) -> bool:
     return "CERTIFICATE_VERIFY_FAILED" in str(exc)
 
 
+def _missing_ca_bundle() -> str:
+    """The configured CA bundle path, if it was set but does not exist.
+
+    Worth its own branch: the resulting OSError is `[Errno 2] No such file or
+    directory` with no filename, which tells an operator who just pasted the console's
+    setup snippet nothing at all about what to do.
+    """
+    bundle = os.getenv("AGENTGUARDS_CA_BUNDLE", "").strip()
+    if bundle and not os.path.exists(os.path.expanduser(bundle)):
+        return bundle
+    return ""
+
+
 def _unreachable_remedy(exc: BaseException) -> str:
     """The advice line for a failed call.
 
@@ -154,6 +167,15 @@ def _unreachable_remedy(exc: BaseException) -> str:
     was not trusted — the wrong lever, and one that leaves the guardrail off long
     after the real problem is fixed.
     """
+    missing = _missing_ca_bundle()
+    if missing:
+        return (
+            f"AGENTGUARDS_CA_BUNDLE points at {missing}, which does not exist. Save the "
+            "appliance's certificate there first:\n"
+            "      openssl s_client -connect <host>:443 -showcerts </dev/null 2>/dev/null "
+            "| openssl x509 > " + missing + "\n"
+            "Or unset AGENTGUARDS_CA_BUNDLE to go back to the public CA roots."
+        )
     if _is_tls_trust_error(exc):
         return (
             "The server's certificate is not trusted. A self-hosted appliance signs "
