@@ -1,0 +1,42 @@
+{
+  "name": "agentguards-codex-selfhosted",
+  "description": "LLM security guardrails for OpenAI Codex, for a self-hosted AgentGuards appliance — jailbreak detection, prompt-injection and web-content scanning, data-exfiltration blocking, and destructive-command authorization, enforced entirely by hooks. No bundled MCP server: Codex's .mcp.json cannot point at a per-installation URL, so a shared one would silently talk to AgentGuards' SaaS instead of your appliance. Use agentguards-codex instead if you're on the hosted product.",
+  "version": "0.1.0",
+  "author": {
+    "name": "AgentGuards",
+    "email": "support@agentguards.co",
+    "url": "https://agentguards.co"
+  },
+  "homepage": "https://agentguards.co",
+  "repository": "https://github.com/alelaguard/agentguards-plugins",
+  "license": "MIT",
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json",
+  "keywords": [
+    "security",
+    "guardrails",
+    "llm-security",
+    "prompt-injection",
+    "jailbreak",
+    "codex",
+    "self-hosted"
+  ],
+  "interface": {
+    "displayName": "AgentGuards (self-hosted)",
+    "shortDescription": "LLM security guardrails for Codex, for a self-hosted appliance",
+    "longDescription": "AgentGuards screens what Codex does — every prompt and every shell command — and surfaces anything risky for approval before it runs. Enforcing hooks provide jailbreak and prompt-injection detection, web-content scanning, data-exfiltration blocking, and destructive-command authorization. This variant has no bundled MCP server and requires AGENTGUARDS_URL to be set explicitly, so it never silently talks to AgentGuards' hosted service instead of your own appliance. Fail-closed by default; switch to fail-open with a single environment variable.",
+    "developerName": "AgentGuards",
+    "category": "Developer Tools",
+    "capabilities": ["Read"],
+    "websiteURL": "https://agentguards.co",
+    "privacyPolicyURL": "https://agentguards.co/privacy",
+    "termsOfServiceURL": "https://agentguards.co/terms",
+    "brandColor": "#4F46E5",
+    "logo": "./assets/logo.png",
+    "composerIcon": "./assets/logo.png",
+    "defaultPrompt": [
+      "Confirm AgentGuards guardrails are active and the appliance is healthy.",
+      "Screen this input with AgentGuards before I act on it:"
+    ]
+  }
+}

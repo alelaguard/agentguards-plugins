@@ -1,0 +1,19 @@
+{
+  "hooks": {
+    "userPromptSubmitted": [
+      {
+        "command": "python3 \"${COPILOT_PLUGIN_ROOT}/scripts/agentguards_copilot_hook.py\" userPromptSubmitted"
+      }
+    ],
+    "preToolUse": [
+      {
+        "command": "python3 \"${COPILOT_PLUGIN_ROOT}/scripts/agentguards_copilot_hook.py\" preToolUse"
+      }
+    ],
+    "postToolUse": [
+      {
+        "command": "python3 \"${COPILOT_PLUGIN_ROOT}/scripts/agentguards_copilot_hook.py\" postToolUse"
+      }
+    ]
+  }
+}
