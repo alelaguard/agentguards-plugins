@@ -1,6 +1,6 @@
 {
   "name": "agentguards-gemini",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "mcpServers": {
     "agentguards": {
       "httpUrl": "https://prod.agentguards.co/mcp",
