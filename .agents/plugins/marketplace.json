@@ -19,6 +19,21 @@
       },
       "category": "Developer Tools",
       "description": "LLM security guardrails for OpenAI Codex: jailbreak/prompt-injection detection, web-content scanning, data-exfiltration blocking, and destructive-command authorization."
+    },
+    {
+      "name": "agentguards-codex-selfhosted",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/alelaguard/agentguards-plugins.git",
+        "path": "./codex-selfhosted",
+        "ref": "main"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools",
+      "description": "LLM security guardrails for OpenAI Codex, for a self-hosted AgentGuards appliance: jailbreak/prompt-injection detection, web-content scanning, data-exfiltration blocking, and destructive-command authorization, enforced entirely by hooks (no bundled MCP server, so it never talks to AgentGuards' hosted service by accident)."
     }
   ]
 }

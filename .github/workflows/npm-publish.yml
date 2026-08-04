@@ -1,22 +1,36 @@
 name: Publish Claude plugin to npm
 
-# Publishes claude/ as @agentguardsco/claude-plugin to the npm registry via
-# npm Trusted Publishing (OIDC) — no long-lived NPM_TOKEN is stored anywhere.
-# GitHub Actions proves its identity to npm directly, so the only setup is a
-# one-time "trusted publisher" link configured on npmjs.com for this package
-# (repo: alelaguard/agentguards-plugins, workflow: npm-publish.yml).
+# Publishes claude/ and claude-selfhosted/ to the npm registry via npm Trusted
+# Publishing (OIDC) — no long-lived NPM_TOKEN is stored anywhere. GitHub Actions
+# proves its identity to npm directly, so the only setup is a one-time "trusted
+# publisher" link configured on npmjs.com for EACH package (repo:
+# alelaguard/agentguards-plugins, workflow: npm-publish.yml) — trust is bound
+# per package name, so claude-selfhosted needs its own link before it can
+# publish for the first time, separate from claude's existing one.
 #
 # Long-lived publish tokens are being deprecated by npm (2FA-bypass GATs lose
 # publish rights ~Jan 2027), which is why we use OIDC instead.
 #
-# Trigger manually from the Actions tab ("Run workflow"), or by pushing a tag
-# like `claude-v0.2.4`.
+# Trigger manually from the Actions tab ("Run workflow", choose which package),
+# or by pushing a tag: `claude-v*` publishes claude/, `claude-selfhosted-v*`
+# publishes claude-selfhosted/. Each plugin keeps its own version line (see
+# feedback-plugin-version-bump), so they are never published together from one
+# tag.
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      package:
+        description: "Which package to publish"
+        required: true
+        type: choice
+        options:
+          - claude
+          - claude-selfhosted
   push:
     tags:
       - "claude-v*"
+      - "claude-selfhosted-v*"
 
 permissions:
   contents: read
@@ -33,6 +47,16 @@ jobs:
           registry-url: "https://registry.npmjs.org"
       - name: Upgrade npm (Trusted Publishing needs npm >= 11.5.1)
         run: npm install -g npm@latest
+      - name: Resolve which directory to publish
+        id: pkg
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "dir=${{ inputs.package }}" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.ref_name }}" == claude-selfhosted-v* ]]; then
+            echo "dir=claude-selfhosted" >> "$GITHUB_OUTPUT"
+          else
+            echo "dir=claude" >> "$GITHUB_OUTPUT"
+          fi
       - name: Publish
-        working-directory: claude
+        working-directory: ${{ steps.pkg.outputs.dir }}
         run: npm publish --provenance --access public

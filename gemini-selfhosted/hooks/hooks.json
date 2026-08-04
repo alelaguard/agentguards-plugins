@@ -1,0 +1,36 @@
+{
+  "hooks": {
+    "BeforeAgent": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${extensionPath}${/}scripts${/}agentguards_gemini_hook.py\" BeforeAgent"
+          }
+        ]
+      }
+    ],
+    "BeforeTool": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${extensionPath}${/}scripts${/}agentguards_gemini_hook.py\" BeforeTool"
+          }
+        ]
+      }
+    ],
+    "AfterTool": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${extensionPath}${/}scripts${/}agentguards_gemini_hook.py\" AfterTool"
+          }
+        ]
+      }
+    ]
+  }
+}
