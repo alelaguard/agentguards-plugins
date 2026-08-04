@@ -1,0 +1,33 @@
+{
+  "name": "@agentguardsco/claude-selfhosted-plugin",
+  "version": "0.1.0",
+  "description": "LLM security guardrails for Claude Code, for a self-hosted AgentGuards appliance — enforced entirely by hooks, no bundled MCP server.",
+  "license": "MIT",
+  "homepage": "https://agentguards.co",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alelaguard/agentguards-plugins.git",
+    "directory": "claude-selfhosted"
+  },
+  "author": {
+    "name": "AgentGuards",
+    "email": "support@agentguards.co",
+    "url": "https://agentguards.co"
+  },
+  "keywords": [
+    "claude-code",
+    "claude-code-plugin",
+    "llm-security",
+    "guardrails",
+    "prompt-injection",
+    "jailbreak-detection",
+    "self-hosted"
+  ],
+  "files": [
+    ".claude-plugin",
+    "hooks",
+    "scripts",
+    "skills",
+    "README.md"
+  ]
+}

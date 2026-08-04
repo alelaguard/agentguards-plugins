@@ -19,6 +19,20 @@
         "llm-security",
         "mcp"
       ]
+    },
+    {
+      "name": "agentguards-claude-selfhosted",
+      "source": "./claude-selfhosted",
+      "description": "LLM security guardrails for Claude Code, for a self-hosted AgentGuards appliance: jailbreak/prompt-injection detection, web-content scanning, data-exfiltration blocking, and destructive-command authorization, enforced entirely by hooks (no bundled MCP server, so it never talks to AgentGuards' hosted service by accident).",
+      "category": "Developer Tools",
+      "keywords": [
+        "security",
+        "guardrails",
+        "prompt-injection",
+        "jailbreak-detection",
+        "llm-security",
+        "self-hosted"
+      ]
     }
   ]
 }
