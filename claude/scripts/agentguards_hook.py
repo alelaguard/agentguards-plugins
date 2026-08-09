@@ -720,14 +720,25 @@ def main() -> None:
         # Warn once per call and let the turn through; a real service error or
         # a rejected key still fail-closed below, in handle_user_prompt /
         # handle_pre_tool_use.
-        print(
-            "AgentGuards: no API key configured — guardrails are OFF for this "
-            "message. Set\n"
-            'AGENTGUARDS_API_KEY (shell profile, or the "AgentGuards API key" '
-            "option on the\n"
-            "plugin's Configure screen) to turn them on.",
-            file=sys.stderr,
+        #
+        # Getting the warning SEEN takes care: stderr from a hook that exits 0
+        # goes to the debug log only — never the transcript, and Claude never
+        # sees it. A warning nobody reads would leave the user silently
+        # unprotected, which is the whole thing we're trying to avoid. So each
+        # event uses the one channel that actually surfaces on exit 0:
+        #   UserPromptSubmit — stdout is added to context, so Claude sees it and
+        #                      can tell the user.
+        #   PreToolUse       — the permissionDecisionReason field.
+        message = (
+            "AgentGuards: no API key configured — guardrails are OFF for this message. "
+            'Set AGENTGUARDS_API_KEY (in your shell profile, the "AgentGuards API key" '
+            'option on the plugin\'s Configure screen, or the ~/.claude/settings.json "env" '
+            "block) to turn them on. Tell the user this: they are not protected."
         )
+        print(message, file=sys.stderr)  # debug log, for anyone tailing it
+        if event_type == "PreToolUse":
+            _pre_tool("allow", message)
+        print(message)
         _allow()
 
     if event_type == "UserPromptSubmit":
