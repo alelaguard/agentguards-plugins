@@ -712,15 +712,23 @@ def main() -> None:
         handle_post_tool_use(event)
         return
 
-    if not AGENTGUARDS_URL or not AGENTGUARDS_API_KEY:
-        _block(
-            """**[AgentGuards] Not configured**
-AGENTGUARDS_API_KEY must be set for the hook to run (AGENTGUARDS_URL defaults
-to the hosted service). The hook is fail-closed, so it blocks until you set
-it — either export AGENTGUARDS_API_KEY in your shell profile, or set the
-"AgentGuards API key" option from the plugin's Configure screen if you
-installed outside a terminal (e.g. Claude Desktop's Chat tab)."""
+    if not AGENTGUARDS_API_KEY:
+        # Unlike an unreachable service or a rejected key, "no key at all" is a
+        # setup gap, not a security event — hard-blocking every single message
+        # forever over it makes the whole host (e.g. Claude Desktop, which has
+        # no shell profile to export into) look broken rather than unconfigured.
+        # Warn once per call and let the turn through; a real service error or
+        # a rejected key still fail-closed below, in handle_user_prompt /
+        # handle_pre_tool_use.
+        print(
+            "AgentGuards: no API key configured — guardrails are OFF for this "
+            "message. Set\n"
+            'AGENTGUARDS_API_KEY (shell profile, or the "AgentGuards API key" '
+            "option on the\n"
+            "plugin's Configure screen) to turn them on.",
+            file=sys.stderr,
         )
+        _allow()
 
     if event_type == "UserPromptSubmit":
         handle_user_prompt(event)
