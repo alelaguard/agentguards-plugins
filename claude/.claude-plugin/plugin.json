@@ -14,14 +14,9 @@
     "agentguards_api_key": {
       "type": "string",
       "title": "AgentGuards API key",
-      "description": "Your ag_ token from agentguards.co/dashboard/keys. Only needed here in surfaces with no shell profile (e.g. Claude Desktop's Chat tab) — CLI users who already export AGENTGUARDS_API_KEY can leave this blank.",
-      "sensitive": true
-    },
-    "agentguards_url": {
-      "type": "string",
-      "title": "AgentGuards URL",
-      "description": "Only change this for a self-hosted instance. Defaults to the hosted service.",
-      "default": "https://prod.agentguards.co"
+      "description": "Your ag_ token from agentguards.co/dashboard/keys. Required — this is what lets the guardrails authenticate.",
+      "sensitive": true,
+      "required": true
     }
   }
 }

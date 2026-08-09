@@ -51,11 +51,16 @@ Environment variables (set in shell profile or inline):
                             certificate, or behind a private CA
     AGENTGUARDS_TLS_NO_VERIFY  Set true to skip certificate verification entirely
 
-In surfaces with no shell profile (e.g. Claude Desktop's Chat tab), the plugin's
-Configure screen sets these instead via userConfig — Claude Code exports them to
-this process as CLAUDE_PLUGIN_OPTION_AGENTGUARDS_API_KEY /
-CLAUDE_PLUGIN_OPTION_AGENTGUARDS_URL, checked here as a fallback when the plain
-env var isn't set. Existing shell-profile setups are unaffected.
+In surfaces with no shell profile (e.g. Claude Desktop's Chat tab), the API key
+comes from the plugin's Configure screen (userConfig) instead — Claude Code
+exports it to hook processes as CLAUDE_PLUGIN_OPTION_AGENTGUARDS_API_KEY, checked
+here as a fallback when the plain env var isn't set. Existing shell-profile
+setups are unaffected.
+
+AGENTGUARDS_URL stays env-var-only and defaults to the hosted service. This is
+the SaaS plugin; a self-hosted appliance uses agentguards-claude-selfhosted,
+which deliberately has NO default URL so it can never silently talk to the SaaS.
+Do not port a default URL into that plugin.
 """
 
 from __future__ import annotations
@@ -77,11 +82,7 @@ for _stream in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-AGENTGUARDS_URL = (
-    os.getenv("AGENTGUARDS_URL")
-    or os.getenv("CLAUDE_PLUGIN_OPTION_AGENTGUARDS_URL")
-    or "https://prod.agentguards.co"
-).rstrip("/")
+AGENTGUARDS_URL = (os.getenv("AGENTGUARDS_URL") or "https://prod.agentguards.co").rstrip("/")
 AGENTGUARDS_API_KEY = os.getenv("AGENTGUARDS_API_KEY") or os.getenv("CLAUDE_PLUGIN_OPTION_AGENTGUARDS_API_KEY", "")
 
 # Per-session approval cache. A command that reaches PostToolUse actually ran
