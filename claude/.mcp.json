@@ -3,9 +3,7 @@
     "agentguards": {
       "type": "http",
       "url": "https://prod.agentguards.co/mcp",
-      "headers": {
-        "X-API-Key": "${AGENTGUARDS_API_KEY}"
-      }
+      "headersHelper": "${CLAUDE_PLUGIN_ROOT}/scripts/mcp_headers.py"
     }
   }
 }
