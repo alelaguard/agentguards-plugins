@@ -34,6 +34,11 @@ export AGENTGUARDS_API_KEY=ag_your_token_here
 Add that line to your shell profile (`~/.bashrc`, `~/.zshrc`, …) and restart
 Claude Code. Or just run `/agentguards:setup` and it will walk you through it.
 
+**Installing from Claude Desktop, Cowork, or web chat?** There's no shell
+profile to export into there, so the plugin asks for the key directly: install
+it, paste your `ag_` token into the **AgentGuards API key** prompt, and you're
+done — no terminal needed.
+
 **Alternative: `npm install @agentguardsco/claude-plugin`.** Fetches these same
 files for programmatic use (pinned versions, CI, custom tooling) — it does
 not register with Claude Code on its own; use `/plugin install` above for that.
