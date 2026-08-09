@@ -2,7 +2,7 @@
   "name": "agentguards-claude-selfhosted",
   "displayName": "AgentGuards (Self-Hosted)",
   "description": "LLM security guardrails for Claude Code, for a self-hosted AgentGuards appliance — jailbreak detection, prompt-injection and web-content scanning, data-exfiltration blocking, and destructive-command authorization, enforced entirely by hooks. No bundled MCP server: Claude Code's .mcp.json cannot point at a per-installation URL, so a shared one would silently talk to AgentGuards' SaaS instead of your appliance. Use agentguards-claude instead if you're on the hosted product.",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "author": {
     "name": "AgentGuards",
     "email": "support@agentguards.co",
@@ -16,14 +16,12 @@
       "type": "string",
       "title": "AgentGuards API key",
       "description": "Your AgentGuards token, starting with ag_. Get it from https://agentguards.co/dashboard/keys — the guardrails cannot screen anything without it.",
-      "sensitive": true,
-      "required": true
+      "sensitive": true
     },
     "agentguards_url": {
       "type": "string",
       "title": "AgentGuards appliance URL",
-      "description": "The https:// address of your self-hosted AgentGuards appliance, e.g. https://agentguards.internal. There is deliberately no default: this plugin must never fall back to the hosted service.",
-      "required": true
+      "description": "The https:// address of your self-hosted AgentGuards appliance, e.g. https://agentguards.internal. There is deliberately no default: this plugin must never fall back to the hosted service."
     }
   }
 }
