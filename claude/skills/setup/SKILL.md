@@ -23,11 +23,19 @@ thing the user must supply is their API key.
 
    - Restart Claude Code (or start a new session) so the MCP server picks up the
      key from the environment.
-   - **No terminal available** (Claude Desktop, Cowork, or web chat)? There's
-     no shell profile to export into there. The plugin prompts for the key at
-     install time; if it was skipped, open the plugin's **Configure** screen
-     and paste it into "AgentGuards API key". Note the hooks read the env var
-     first, so a shell export still wins where one exists.
+   - **No shell profile** (Claude Desktop's Code tab, or any GUI-launched
+     session that doesn't read `~/.bashrc`)? Set it in the `"env"` block of
+     `~/.claude/settings.json` instead — that reaches both the hooks and the
+     MCP server:
+
+     ```json
+     { "env": { "AGENTGUARDS_API_KEY": "ag_your_token_here" } }
+     ```
+
+     The plugin's **Configure** screen also accepts a key, but it only feeds
+     the hooks — the MCP server reads the environment variable — so a user who
+     sets only that will have working enforcement but unauthenticated MCP
+     tools. Say so rather than letting them assume everything is wired up.
 
 2. **Confirm the URL (optional).** AgentGuards defaults to
    `https://prod.agentguards.co`. Only set `AGENTGUARDS_URL` if the user runs a

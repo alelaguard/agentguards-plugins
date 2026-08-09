@@ -34,10 +34,25 @@ export AGENTGUARDS_API_KEY=ag_your_token_here
 Add that line to your shell profile (`~/.bashrc`, `~/.zshrc`, …) and restart
 Claude Code. Or just run `/agentguards:setup` and it will walk you through it.
 
-**Installing from Claude Desktop, Cowork, or web chat?** There's no shell
-profile to export into there, so the plugin asks for the key directly: install
-it, paste your `ag_` token into the **AgentGuards API key** prompt, and you're
-done — no terminal needed.
+**No shell profile?** (Claude Desktop's Code tab, or any GUI-launched session
+that doesn't read `~/.bashrc`.) Set it in `~/.claude/settings.json` instead —
+this feeds both the hooks and the MCP server, exactly like a shell export:
+
+```json
+{
+  "env": {
+    "AGENTGUARDS_API_KEY": "ag_your_token_here"
+  }
+}
+```
+
+The plugin's **Configure** screen also accepts a key, but it is only a fallback
+for the hooks — the bundled MCP server reads the environment variable. Prefer
+one of the two options above so both halves authenticate.
+
+**Claude Desktop's Chat and Cowork tabs are not supported.** They sync from
+your claude.ai account rather than `~/.claude`, so there is no environment for
+the key to come from, and hooks do not run in Chat. Use the **Code** tab.
 
 **Alternative: `npm install @agentguardsco/claude-plugin`.** Fetches these same
 files for programmatic use (pinned versions, CI, custom tooling) — it does

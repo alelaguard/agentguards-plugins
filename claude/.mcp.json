@@ -4,7 +4,7 @@
       "type": "http",
       "url": "https://prod.agentguards.co/mcp",
       "headers": {
-        "X-API-Key": "${user_config.agentguards_api_key}"
+        "X-API-Key": "${AGENTGUARDS_API_KEY}"
       }
     }
   }
