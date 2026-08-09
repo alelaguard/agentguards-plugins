@@ -2,7 +2,7 @@
   "name": "agentguards-claude",
   "displayName": "AgentGuards",
   "description": "LLM security guardrails for Claude Code — jailbreak detection, prompt-injection and web-content scanning, data-exfiltration blocking, and destructive-command authorization. Bundles the AgentGuards MCP server plus enforcing hooks.",
-  "version": "0.2.13",
+  "version": "0.2.14",
   "author": {
     "name": "AgentGuards",
     "email": "support@agentguards.co",
@@ -15,9 +15,8 @@
     "agentguards_api_key": {
       "type": "string",
       "title": "AgentGuards API key",
-      "description": "Your AgentGuards token, starting with ag_. Get it from https://agentguards.co/dashboard/keys — the guardrails cannot screen anything without it.",
-      "sensitive": true,
-      "required": true
+      "description": "Optional fallback for the hooks when AGENTGUARDS_API_KEY is not set in the environment. The bundled MCP server always reads the environment variable, so prefer setting AGENTGUARDS_API_KEY in your shell profile, or in the \"env\" block of ~/.claude/settings.json if you have no shell.",
+      "sensitive": true
     }
   }
 }
