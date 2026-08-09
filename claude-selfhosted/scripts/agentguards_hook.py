@@ -70,8 +70,21 @@ for _stream in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-AGENTGUARDS_URL = os.getenv("AGENTGUARDS_URL", "").rstrip("/")
-AGENTGUARDS_API_KEY = os.getenv("AGENTGUARDS_API_KEY", "")
+# Environment first, then the values the user typed into the plugin's own config
+# prompt (exported to hook processes as CLAUDE_PLUGIN_OPTION_<KEY>). The prompt is
+# the only route that works on a GUI-launched host such as the Claude Desktop app,
+# which never reads a shell profile.
+#
+# Note there is still NO default URL here, deliberately. Falling back to the
+# hosted service would mean an appliance customer silently shipping their prompts
+# to someone else's server; an unset URL must stay unset. The plugin option is a
+# value the operator typed for THIS installation, so it carries no such risk.
+AGENTGUARDS_URL = (
+    os.getenv("AGENTGUARDS_URL") or os.getenv("CLAUDE_PLUGIN_OPTION_AGENTGUARDS_URL", "")
+).rstrip("/")
+AGENTGUARDS_API_KEY = os.getenv("AGENTGUARDS_API_KEY") or os.getenv(
+    "CLAUDE_PLUGIN_OPTION_AGENTGUARDS_API_KEY", ""
+)
 
 # Per-session approval cache. A command that reaches PostToolUse actually ran
 # (= the user approved it), so we remember its binaries keyed by session_id and
