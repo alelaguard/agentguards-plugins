@@ -169,23 +169,48 @@ function Invoke-AgentGuards([string]$Path, $Payload, [int]$TimeoutSec = 10) {
     Initialize-Tls
     $uri = $AgentGuardsUrl + $Path
     $json = $Payload | ConvertTo-Json -Depth 10
-    $headers = @{ 'X-API-Key' = $ApiKey }
+    $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+
+    # Deliberately not Invoke-RestMethod. On Windows PowerShell 5.1 it decodes a
+    # response whose Content-Type carries no charset as ISO-8859-1, which
+    # double-encodes every non-ASCII byte the service sends back: the shield glyph
+    # in the block panel renders as mojibake, and a flagged prompt in any non-Latin
+    # script is corrupted in the panel shown to the user. The service does not set
+    # charset, so this fires on every block. HttpWebRequest lets us pin the decode
+    # to UTF-8 on both the success and error paths.
     try {
-        return Invoke-RestMethod -Uri $uri -Method Post -Body $json `
-            -ContentType 'application/json' -Headers $headers -TimeoutSec $TimeoutSec
+        $request = [System.Net.HttpWebRequest]::Create($uri)
+        $request.Method = 'POST'
+        $request.ContentType = 'application/json; charset=utf-8'
+        $request.Accept = 'application/json'
+        $request.Headers.Add('X-API-Key', $ApiKey)
+        $request.Timeout = $TimeoutSec * 1000
+        $request.ReadWriteTimeout = $TimeoutSec * 1000
+
+        $requestStream = $request.GetRequestStream()
+        $requestStream.Write($bodyBytes, 0, $bodyBytes.Length)
+        $requestStream.Close()
+
+        $response = $request.GetResponse()
+        $reader = New-Object System.IO.StreamReader($response.GetResponseStream(), [System.Text.Encoding]::UTF8)
+        $text = $reader.ReadToEnd()
+        $reader.Close()
+        $response.Close()
+
+        if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+        return ($text | ConvertFrom-Json)
     } catch {
         $status = 0
         $body = ''
         try { $status = [int]$_.Exception.Response.StatusCode } catch { }
-        # PowerShell 7 puts the response body here; 5.1 usually does too for
-        # Invoke-RestMethod failures.
-        try { if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $body = $_.ErrorDetails.Message } } catch { }
+        try {
+            $stream = $_.Exception.Response.GetResponseStream()
+            $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8)
+            $body = $reader.ReadToEnd()
+            $reader.Close()
+        } catch { }
         if ([string]::IsNullOrEmpty($body)) {
-            try {
-                $stream = $_.Exception.Response.GetResponseStream()
-                $reader = New-Object System.IO.StreamReader $stream
-                $body = $reader.ReadToEnd()
-            } catch { }
+            try { if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $body = $_.ErrorDetails.Message } } catch { }
         }
         if ($status -ne 0) {
             throw [AgentGuardsHttpError]::new($status, $body, $_.Exception.Message)
