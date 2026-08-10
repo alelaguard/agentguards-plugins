@@ -2,7 +2,7 @@
   "name": "agentguards-claude",
   "displayName": "AgentGuards",
   "description": "LLM security guardrails for Claude Code — jailbreak detection, prompt-injection and web-content scanning, data-exfiltration blocking, and destructive-command authorization. Bundles the AgentGuards MCP server plus enforcing hooks.",
-  "version": "0.2.16",
+  "version": "0.2.17",
   "author": {
     "name": "AgentGuards",
     "email": "support@agentguards.co",
@@ -15,7 +15,7 @@
     "agentguards_api_key": {
       "type": "string",
       "title": "AgentGuards API key",
-      "description": "Optional fallback for the hooks when AGENTGUARDS_API_KEY is not set in the environment. The bundled MCP server always reads the environment variable, so prefer setting AGENTGUARDS_API_KEY in your shell profile, or in the \"env\" block of ~/.claude/settings.json if you have no shell.",
+      "description": "Optional fallback for the hooks when AGENTGUARDS_API_KEY is not already set. The easiest way to set your key is to run /agentguards:setup in an Agent Mode or Local Code session and let Claude save it for you. Note the Claude Desktop app never reads a shell profile, so an export will not reach it.",
       "sensitive": true
     }
   }
