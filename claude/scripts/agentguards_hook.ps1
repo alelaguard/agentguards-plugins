@@ -544,7 +544,14 @@ function Invoke-PostToolUse($Event) {
 # --------------------------------------------------------------------------
 # Main
 # --------------------------------------------------------------------------
-$raw = [Console]::In.ReadToEnd()
+# Read stdin as UTF-8 explicitly. [Console]::In decodes using Console::InputEncoding,
+# which is the console's input codepage - 437 or 1252 on a stock Windows box, not
+# UTF-8. The host sends the event as UTF-8 JSON, so on those codepages every
+# non-ASCII character in the prompt is corrupted before it is screened, and the hook
+# ends up evaluating different bytes than the model receives.
+$stdinReader = New-Object System.IO.StreamReader([Console]::OpenStandardInput(), [System.Text.Encoding]::UTF8)
+$raw = $stdinReader.ReadToEnd()
+$stdinReader.Close()
 $evt = $null
 try { if (-not [string]::IsNullOrWhiteSpace($raw)) { $evt = $raw | ConvertFrom-Json } } catch { Exit-Allow }
 if ($null -eq $evt) { Exit-Allow }
