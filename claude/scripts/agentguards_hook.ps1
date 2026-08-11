@@ -495,11 +495,16 @@ function Invoke-WebContentScan($Event) {
     }
 
     if ($decision -ne 'allow') {
+        # Deliberately NOT appending $result.flagged_input here, unlike the prompt
+        # path above. On the prompt path the flagged text is the user's own input and
+        # quoting it back is the point. Here it is fetched web content: the server's
+        # excerpt is the FIRST 240 characters of the page, so echoing it into a field
+        # the model reads hands an attacker a guaranteed 240-char channel into
+        # context -- carrying AgentGuards' own framing -- from a page we just decided
+        # was too dangerous to show. Keep this in step with the Python hook.
         $message = $result.message
         if ([string]::IsNullOrWhiteSpace($message)) { $message = '[AgentGuards] Web content blocked' }
-        $detail = $message
-        if ($result.flagged_input) { $detail = "$message`n`n    $($result.flagged_input)" }
-        Exit-PostToolBlock $detail '[AgentGuards: web content withheld]'
+        Exit-PostToolBlock $message '[AgentGuards: web content withheld]'
     }
     Exit-Allow
 }
