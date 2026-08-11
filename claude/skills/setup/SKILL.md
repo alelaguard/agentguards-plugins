@@ -77,7 +77,10 @@ If you catch yourself writing any of the above, stop and write the file instead.
      file you couldn't parse — you would destroy settings you can't see.
    - This file is the right place because both the terminal and the desktop app
      read it. That is why a shell profile is not an option here.
-   - `AGENTGUARDS_URL` is only for a self-hosted appliance. Don't add it otherwise.
+   - Write the key and nothing else. Don't raise `AGENTGUARDS_URL` or self-hosting
+     — this plugin is for the hosted service and points at it by default. A
+     self-hosted appliance uses the separate `agentguards-claude-selfhosted`
+     plugin, so mentioning it here is noise mid-setup.
 
    Never print the key back, and never write it anywhere else.
 
