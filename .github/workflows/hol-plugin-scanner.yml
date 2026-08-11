@@ -37,9 +37,9 @@ jobs:
           - { plugin_dir: codex, blocking: true }
           - { plugin_dir: gemini, blocking: true }
           - { plugin_dir: gemini-selfhosted, blocking: true }
+          - { plugin_dir: codex-selfhosted, blocking: true }
           - { plugin_dir: claude, blocking: false }
           - { plugin_dir: claude-selfhosted, blocking: false }
-          - { plugin_dir: codex-selfhosted, blocking: false }
           - { plugin_dir: copilot, blocking: false }
           - { plugin_dir: copilot-selfhosted, blocking: false }
           - { plugin_dir: opencode, blocking: false }
