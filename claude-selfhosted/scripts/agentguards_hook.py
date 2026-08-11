@@ -32,10 +32,23 @@ Configure in ~/.claude/settings.json:
 
 The PostToolUse matcher covers the built-in WebFetch/WebSearch tools, whose fetched
 content is scanned with use_case="web_fetch" and redacted if AgentGuards flags it.
-Bash commands get the same scan when they invoke a fetch binary (curl, wget, etc.) —
-this does NOT rely on the model cooperatively calling the MCP check_input tool; it is
-enforced here in the hook regardless of what the model does. Other Bash commands only
-update the session-approval cache.
+That path does not depend on the model cooperatively calling the MCP check_input
+tool — the hook runs whatever the model does.
+
+Bash commands get the same scan when the command line invokes a fetch binary. That
+is resolved properly rather than by looking at the first word (see _resolve_binaries):
+wrappers are stepped over, `sh -c "..."` is followed, and $(...) / backticks are
+treated as their own commands, so `sudo curl`, `timeout 5 curl`, `xargs curl` and
+`OUT=$(curl ...)` are all scanned.
+
+Be precise about what remains uncovered: this matches BINARY NAMES, so a fetch
+performed by something not on the list is not seen — `python3 -c "import
+urllib.request..."`, `node -e "fetch(...)"`, a script that curls internally. Closing
+that properly means scanning all Bash output, at a round-trip per command. Do not
+restate this as blanket enforcement; it is enforcement of the forms people actually
+use, which is worth having and is not the same claim.
+
+Other Bash commands only update the session-approval cache.
 
 Write/Edit/MultiEdit are scanned for SAST findings and secrets (semgrep + gitleaks,
 run server-side on a separate host) via /v1/code/scan. This is a paid, opt-in
@@ -322,16 +335,100 @@ def _fail_open() -> bool:
     return os.getenv("AGENTGUARDS_FAIL_OPEN", "").strip().lower() in ("1", "true", "yes", "on")
 
 
-def _command_binaries(command: str) -> list[str]:
-    """Leading binary of each pipeline segment (skips leading VAR=val)."""
-    binaries: list[str] = []
-    for segment in re.split(r"\|\||&&|[|;&\n]", command or ""):
-        tokens = segment.strip().split()
-        idx = 0
-        while idx < len(tokens) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tokens[idx]):
+# Commands that run ANOTHER command. Naming them is what stops `sudo curl` and
+# `timeout 5 curl` reading as "sudo" and "timeout" — which is how fetches slipped past
+# the web-content scan. Values are the options that consume the FOLLOWING token, so
+# `sudo -u root curl` does not mistake "root" for the command.
+_WRAPPERS: dict[str, set[str]] = {
+    "sudo": {"-u", "-g", "-p", "-C", "-U", "-r", "-t", "-h"},
+    "doas": {"-u", "-C"},
+    "env": {"-u", "-C", "-S"},
+    "timeout": {"-s", "-k", "--signal", "--kill-after"},
+    "nohup": set(),
+    "nice": {"-n", "--adjustment"},
+    "ionice": {"-c", "-n", "-p", "-t"},
+    "stdbuf": {"-i", "-o", "-e"},
+    "command": set(),
+    "xargs": {"-a", "-d", "-E", "-I", "-L", "-n", "-P", "-s", "--max-args"},
+    "time": {"-o", "-f", "--output", "--format"},
+    "setsid": set(),
+    "unbuffer": set(),
+    "watch": {"-n", "--interval"},
+    "script": {"-c"},
+}
+
+# Shells, which run whatever string follows -c. `bash -c "curl ..."` is a fetch.
+_SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "ash", "busybox"}
+
+# $(...) and `...` run a command whose output is substituted in. Treated as their own
+# segments so `OUT=$(curl ...)` is seen as a fetch rather than an assignment.
+_SUBSTITUTION_RE = re.compile(r"\$\(([^()]*)\)|`([^`]*)`")
+
+
+def _segments(command: str) -> list[str]:
+    """Split a command line into the individual commands it runs."""
+    parts: list[str] = []
+    remainder = _SUBSTITUTION_RE.sub(
+        lambda m: parts.append(m.group(1) or m.group(2) or "") or " ", command or ""
+    )
+    parts.extend(re.split(r"\|\||&&|[|;&\n]", remainder))
+    return parts
+
+
+def _resolve_binaries(segment: str, _depth: int = 0) -> list[str]:
+    """Every binary a single segment invokes: wrappers, then the command they wrap.
+
+    Returns the whole chain rather than just the target, so the approval cache stays
+    strict — approving `curl` alone must not silently approve `sudo curl`.
+    """
+    tokens = segment.strip().split()
+    found: list[str] = []
+    idx = 0
+    while idx < len(tokens):
+        token = tokens[idx]
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", token):  # leading VAR=val
             idx += 1
-        if idx < len(tokens):
-            binaries.append(tokens[idx].split("/")[-1])
+            continue
+        name = token.split("/")[-1]
+        found.append(name)
+
+        if name in _SHELLS and _depth < 3:
+            # Recurse into the string after -c, which the shell will execute.
+            for j in range(idx + 1, len(tokens) - 1):
+                if tokens[j] == "-c" or (tokens[j].startswith("-") and "c" in tokens[j][1:]):
+                    nested = " ".join(tokens[j + 1 :]).strip("\"'")
+                    found.extend(_resolve_binaries(nested, _depth + 1))
+                    break
+            break
+
+        if name not in _WRAPPERS or _depth >= 3:
+            break
+
+        # Step over the wrapper's own options to reach the command it runs.
+        takes_value = _WRAPPERS[name]
+        idx += 1
+        while idx < len(tokens):
+            arg = tokens[idx]
+            if arg == "--":
+                idx += 1
+                break
+            if arg.startswith("-"):
+                idx += 1
+                if arg in takes_value and idx < len(tokens):
+                    idx += 1
+                continue
+            if re.fullmatch(r"\d+(\.\d+)?[smhd]?", arg):  # timeout 5, nice 10
+                idx += 1
+                continue
+            break
+    return found
+
+
+def _command_binaries(command: str) -> list[str]:
+    """Every binary the command line invokes, across pipelines and substitutions."""
+    binaries: list[str] = []
+    for segment in _segments(command):
+        binaries.extend(_resolve_binaries(segment))
     return binaries
 
 
