@@ -275,11 +275,21 @@ def _allow() -> None:
 
 
 def _post_tool_block(reason: str, redacted: str) -> None:
-    # PostToolUse cannot hard-block (the tool already ran) and exit code 2 is a
-    # NO-OP for PostToolUse — so we must use exit 0 + JSON. "updatedToolOutput"
-    # replaces the tool result so the model never sees the poisoned content;
-    # "decision": "block" tells the model it was withheld. (Do NOT use the exit-2
-    # _block() helper here — that only blocks at PreToolUse/UserPromptSubmit.)
+    # PostToolUse cannot hard-block: the tool already ran, and neither exit 2 nor
+    # "decision": "block" undoes that. Per Claude Code's hook reference, both are
+    # advisory at PostToolUse — they surface a message to the model, nothing more.
+    # "updatedToolOutput" is the one field that replaces the tool result it reads.
+    # (Do NOT use the exit-2 _block() helper here; that blocks only at
+    # PreToolUse/UserPromptSubmit.)
+    #
+    # This used to claim the model "never sees" the content. That is more than we
+    # can promise: withholding rests entirely on updatedToolOutput, and the swap has
+    # not been verified end-to-end on large responses — a block observed in the field
+    # arrived with the original content still in context. Treat this as "the model is
+    # TOLD not to act on it", not "the model cannot see it".
+    #
+    # `reason` is shown to the model verbatim, so never build it from fetched content
+    # (see handle_web_content, which deliberately drops the server's flagged_input).
     print(
         json.dumps(
             {
