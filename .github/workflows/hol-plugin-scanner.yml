@@ -13,12 +13,43 @@ permissions:
 jobs:
   scan:
     runs-on: ubuntu-latest
+    # Was pinned to "codex" alone, so eight of the nine plugins shipped unscanned —
+    # including both Claude plugins, which have by far the most installs.
+    #
+    # Turning them all on at once revealed that most sit below the 80 threshold that
+    # codex meets: claude 71, claude-selfhosted 66, copilot 50, copilot-selfhosted 43,
+    # opencode 39, and codex-selfhosted failing on a finding rather than a score.
+    # Those are packaging/completeness gaps (codex has the LICENSE, SECURITY.md,
+    # assets and full interface metadata the others lack), not newly-introduced
+    # vulnerabilities — none of them regressed here, they were simply never measured.
+    #
+    # So: `blocking` plugins gate the build as before, the rest report only. Their
+    # SARIF still uploads, so findings appear in the Security tab and someone can
+    # raise them deliberately. Gating them today would block security fixes behind a
+    # metadata cleanup, and lowering the threshold to make everything pass would
+    # quietly weaken the one plugin that already meets it.
+    #
+    # Flip `blocking: true` per plugin as each is brought up to standard.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { plugin_dir: codex, blocking: true }
+          - { plugin_dir: gemini, blocking: true }
+          - { plugin_dir: gemini-selfhosted, blocking: true }
+          - { plugin_dir: claude, blocking: false }
+          - { plugin_dir: claude-selfhosted, blocking: false }
+          - { plugin_dir: codex-selfhosted, blocking: false }
+          - { plugin_dir: copilot, blocking: false }
+          - { plugin_dir: copilot-selfhosted, blocking: false }
+          - { plugin_dir: opencode, blocking: false }
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: HOL Plugin Scanner
         uses: hashgraph-online/ai-plugin-scanner-action@260cc0d630501bd6507461c0f50dce5a13bd506d # v1.2.367
+        continue-on-error: ${{ !matrix.blocking }}
         with:
-          plugin_dir: "codex"
+          plugin_dir: ${{ matrix.plugin_dir }}
           mode: scan
           min_score: 80
           fail_on_severity: high

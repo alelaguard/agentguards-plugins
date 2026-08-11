@@ -35,14 +35,19 @@ content is scanned with use_case="web_fetch" and redacted if AgentGuards flags i
 That path does not depend on the model cooperatively calling the MCP check_input
 tool — the hook runs whatever the model does.
 
-Bash commands get the same scan when the leading binary of a pipeline segment is a
-known fetch binary (curl, wget, ...). Be precise about what that does and does not
-cover: the check is a binary-NAME match (see _is_fetch_command), so a fetch reached
-any other way is not scanned. `bash -c "curl ..."`, `sudo curl`, `xargs curl`,
-`$(curl ...)`, and `python3 -c "import urllib..."` all fetch content that this hook
-does not see. Wrapper prefixes are stripped to narrow the gap, but a name-based check
-cannot close it; only scanning all Bash stdout would, at a round-trip per command.
-Do not restate this as blanket enforcement — it is enforcement of the common case.
+Bash commands get the same scan when the command line invokes a fetch binary. That
+is resolved properly rather than by looking at the first word (see _resolve_binaries):
+wrappers are stepped over, `sh -c "..."` is followed, and $(...) / backticks are
+treated as their own commands, so `sudo curl`, `timeout 5 curl`, `xargs curl` and
+`OUT=$(curl ...)` are all scanned.
+
+Be precise about what remains uncovered: this matches BINARY NAMES, so a fetch
+performed by something not on the list is not seen — `python3 -c "import
+urllib.request..."`, `node -e "fetch(...)"`, a script that curls internally. Closing
+that properly means scanning all Bash output, at a round-trip per command. Do not
+restate this as blanket enforcement; it is enforcement of the forms people actually
+use, which is worth having and is not the same claim.
+
 Other Bash commands only update the session-approval cache.
 
 Write/Edit/MultiEdit are scanned for SAST findings and secrets (semgrep + gitleaks,
@@ -73,6 +78,7 @@ Do not port a default URL into that plugin.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -93,11 +99,26 @@ for _stream in (sys.stdout, sys.stderr):
 AGENTGUARDS_URL = (os.getenv("AGENTGUARDS_URL") or "https://prod.agentguards.co").rstrip("/")
 AGENTGUARDS_API_KEY = os.getenv("AGENTGUARDS_API_KEY") or os.getenv("CLAUDE_PLUGIN_OPTION_AGENTGUARDS_API_KEY", "")
 
-# Per-session approval cache. A command that reaches PostToolUse actually ran
-# (= the user approved it), so we remember its binaries keyed by session_id and
-# skip re-asking for them later in the same session. The risk scorer always runs
-# first, so a "remembered" binary can never carry a destructive command through —
-# a deny still denies.
+# Per-session approval cache: binaries the user has ALREADY been asked about and
+# approved, so we don't re-ask for them later in the same session.
+#
+# "Approved" means exactly that. A command only becomes a remembered approval if the
+# user was genuinely prompted (_mark_pending, at the moment we return "ask") AND it
+# then ran (_redeem_pending, at PostToolUse). Commands the server auto-allows as safe
+# baseline are never remembered — they were never approved, nobody saw a prompt.
+#
+# This used to record every command that reached PostToolUse, which meant a silently
+# allowed `rm stale.log` taught the cache that `rm` was approved, and the next
+# `rm -rf ~/work` — which the server rates require-approval — was let straight
+# through. A deny still denied, but require-approval was quietly downgraded to allow.
+#
+# The risk scorer still runs first on every command, so a remembered binary can never
+# carry a denied command through.
+_APPROVALS_PATH = os.path.expanduser("~/.claude/agentguards_session_approvals.json")
+_SESSION_TTL = 7 * 24 * 3600  # prune sessions older than this many seconds
+# Bumped when the meaning of a stored approval changes. v1 recorded every command
+# that ran, including ones nobody was asked about, so v1 entries are ignored.
+_APPROVALS_VERSION = 2
 _APPROVALS_PATH = os.path.expanduser("~/.claude/agentguards_session_approvals.json")
 _SESSION_TTL = 7 * 24 * 3600  # prune sessions older than this many seconds
 
@@ -354,16 +375,100 @@ def _fail_open() -> bool:
     return os.getenv("AGENTGUARDS_FAIL_OPEN", "").strip().lower() in ("1", "true", "yes", "on")
 
 
-def _command_binaries(command: str) -> list[str]:
-    """Leading binary of each pipeline segment (skips leading VAR=val)."""
-    binaries: list[str] = []
-    for segment in re.split(r"\|\||&&|[|;&\n]", command or ""):
-        tokens = segment.strip().split()
-        idx = 0
-        while idx < len(tokens) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tokens[idx]):
+# Commands that run ANOTHER command. Naming them is what stops `sudo curl` and
+# `timeout 5 curl` reading as "sudo" and "timeout" — which is how fetches slipped past
+# the web-content scan. Values are the options that consume the FOLLOWING token, so
+# `sudo -u root curl` does not mistake "root" for the command.
+_WRAPPERS: dict[str, set[str]] = {
+    "sudo": {"-u", "-g", "-p", "-C", "-U", "-r", "-t", "-h"},
+    "doas": {"-u", "-C"},
+    "env": {"-u", "-C", "-S"},
+    "timeout": {"-s", "-k", "--signal", "--kill-after"},
+    "nohup": set(),
+    "nice": {"-n", "--adjustment"},
+    "ionice": {"-c", "-n", "-p", "-t"},
+    "stdbuf": {"-i", "-o", "-e"},
+    "command": set(),
+    "xargs": {"-a", "-d", "-E", "-I", "-L", "-n", "-P", "-s", "--max-args"},
+    "time": {"-o", "-f", "--output", "--format"},
+    "setsid": set(),
+    "unbuffer": set(),
+    "watch": {"-n", "--interval"},
+    "script": {"-c"},
+}
+
+# Shells, which run whatever string follows -c. `bash -c "curl ..."` is a fetch.
+_SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "ash", "busybox"}
+
+# $(...) and `...` run a command whose output is substituted in. Treated as their own
+# segments so `OUT=$(curl ...)` is seen as a fetch rather than an assignment.
+_SUBSTITUTION_RE = re.compile(r"\$\(([^()]*)\)|`([^`]*)`")
+
+
+def _segments(command: str) -> list[str]:
+    """Split a command line into the individual commands it runs."""
+    parts: list[str] = []
+    remainder = _SUBSTITUTION_RE.sub(
+        lambda m: parts.append(m.group(1) or m.group(2) or "") or " ", command or ""
+    )
+    parts.extend(re.split(r"\|\||&&|[|;&\n]", remainder))
+    return parts
+
+
+def _resolve_binaries(segment: str, _depth: int = 0) -> list[str]:
+    """Every binary a single segment invokes: wrappers, then the command they wrap.
+
+    Returns the whole chain rather than just the target, so the approval cache stays
+    strict — approving `curl` alone must not silently approve `sudo curl`.
+    """
+    tokens = segment.strip().split()
+    found: list[str] = []
+    idx = 0
+    while idx < len(tokens):
+        token = tokens[idx]
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", token):  # leading VAR=val
             idx += 1
-        if idx < len(tokens):
-            binaries.append(tokens[idx].split("/")[-1])
+            continue
+        name = token.split("/")[-1]
+        found.append(name)
+
+        if name in _SHELLS and _depth < 3:
+            # Recurse into the string after -c, which the shell will execute.
+            for j in range(idx + 1, len(tokens) - 1):
+                if tokens[j] == "-c" or (tokens[j].startswith("-") and "c" in tokens[j][1:]):
+                    nested = " ".join(tokens[j + 1 :]).strip("\"'")
+                    found.extend(_resolve_binaries(nested, _depth + 1))
+                    break
+            break
+
+        if name not in _WRAPPERS or _depth >= 3:
+            break
+
+        # Step over the wrapper's own options to reach the command it runs.
+        takes_value = _WRAPPERS[name]
+        idx += 1
+        while idx < len(tokens):
+            arg = tokens[idx]
+            if arg == "--":
+                idx += 1
+                break
+            if arg.startswith("-"):
+                idx += 1
+                if arg in takes_value and idx < len(tokens):
+                    idx += 1
+                continue
+            if re.fullmatch(r"\d+(\.\d+)?[smhd]?", arg):  # timeout 5, nice 10
+                idx += 1
+                continue
+            break
+    return found
+
+
+def _command_binaries(command: str) -> list[str]:
+    """Every binary the command line invokes, across pipelines and substitutions."""
+    binaries: list[str] = []
+    for segment in _segments(command):
+        binaries.extend(_resolve_binaries(segment))
     return binaries
 
 
@@ -373,7 +478,16 @@ def _load_approvals() -> dict:
             data = json.load(fh)
     except (OSError, ValueError):
         return {}
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    # Entries written before the approval fix recorded binaries the user was never
+    # asked about (see _mark_pending). They cannot be told apart from genuine ones, so
+    # they are dropped rather than trusted; the cost is at most one extra prompt.
+    return {
+        sid: e
+        for sid, e in data.items()
+        if isinstance(e, dict) and e.get("v") == _APPROVALS_VERSION
+    }
 
 
 def _approved_binaries(session_id: str) -> set:
@@ -383,6 +497,60 @@ def _approved_binaries(session_id: str) -> set:
     return set(entry.get("binaries", []))
 
 
+def _command_key(command: str) -> str:
+    """Stable id for one exact command, so a pending approval can only be redeemed
+    by the command it was granted for. The command text itself is never stored."""
+    return hashlib.sha256((command or "").encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def _write_approvals(data: dict) -> None:
+    now = time.time()
+    data = {
+        sid: e
+        for sid, e in data.items()
+        if isinstance(e, dict) and now - e.get("ts", 0) < _SESSION_TTL
+    }
+    try:
+        os.makedirs(os.path.dirname(_APPROVALS_PATH), exist_ok=True)
+        # 0600: this file decides whether a command is re-prompted, so anything able
+        # to write it could pre-approve binaries for the session.
+        fd = os.open(_APPROVALS_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            json.dump(data, fh)
+    except OSError:
+        pass
+
+
+def _mark_pending(session_id: str, command: str) -> None:
+    """Record that the USER IS BEING ASKED about this exact command.
+
+    Only a command that reached this point — i.e. Claude Code is putting the approval
+    prompt in front of a human — may ever become a remembered approval. That is the
+    whole point of the fix: previously every command that merely *ran* was recorded,
+    including the safe-baseline ones the server auto-allowed with no prompt at all, so
+    `rm stale.log` (allowed silently) taught the cache that `rm` was approved and the
+    next `rm -rf ~/work` was let through without ever asking.
+
+    Keyed by the exact command, not just its binaries. Keying by binary alone would
+    reintroduce the bug through the back door: deny `rm -rf /`, then run a harmless
+    `rm foo.txt`, and the harmless one would redeem the denied command's pending
+    entry. A pending approval can only be redeemed by the command it was granted for.
+    """
+    if not session_id or not command:
+        return
+    data = _load_approvals()
+    entry = data.get(session_id) or {}
+    pending = dict(entry.get("pending") or {})
+    pending[_command_key(command)] = sorted(set(_command_binaries(command)))
+    data[session_id] = {
+        "v": _APPROVALS_VERSION,
+        "binaries": sorted(set(entry.get("binaries", []))),
+        "pending": pending,
+        "ts": time.time(),
+    }
+    _write_approvals(data)
+
+
 _FETCH_BINARIES = {"curl", "wget", "http", "https", "fetch", "aria2c"}
 
 
@@ -390,24 +558,34 @@ def _is_fetch_command(command: str) -> bool:
     return any(b in _FETCH_BINARIES for b in _command_binaries(command))
 
 
-def _remember_binaries(session_id: str, binaries: list[str]) -> None:
-    if not session_id or not binaries:
+def _redeem_pending(session_id: str, command: str) -> None:
+    """This command actually ran, so if the user was asked about it, it was approved.
+
+    Reaching PostToolUse means the tool call went through. Combined with a pending
+    entry — which only _mark_pending creates, and only when the user was genuinely
+    prompted — that is a real human approval, and its binaries can be remembered for
+    the rest of the session.
+
+    A command with no pending entry ran without anyone being asked (safe baseline),
+    so nothing is remembered. That is the fix.
+    """
+    if not session_id or not command:
         return
     data = _load_approvals()
-    entry = data.get(session_id) or {}
-    merged = sorted(set(entry.get("binaries", [])) | set(binaries))
-    data[session_id] = {"binaries": merged, "ts": time.time()}
-    now = time.time()
-    data = {
-        sid: e for sid, e in data.items()
-        if isinstance(e, dict) and now - e.get("ts", 0) < _SESSION_TTL
+    entry = data.get(session_id)
+    if not entry:
+        return
+    pending = dict(entry.get("pending") or {})
+    binaries = pending.pop(_command_key(command), None)
+    if binaries is None:
+        return
+    data[session_id] = {
+        "v": _APPROVALS_VERSION,
+        "binaries": sorted(set(entry.get("binaries", [])) | set(binaries)),
+        "pending": pending,
+        "ts": time.time(),
     }
-    try:
-        os.makedirs(os.path.dirname(_APPROVALS_PATH), exist_ok=True)
-        with open(_APPROVALS_PATH, "w") as fh:
-            json.dump(data, fh)
-    except OSError:
-        pass
+    _write_approvals(data)
 
 
 def _pre_tool(permission: str, reason: str) -> None:
@@ -505,6 +683,9 @@ AgentGuards is unreachable ({exc}) and the hook is fail-closed.
     if binaries and all(b in _approved_binaries(session_id) for b in binaries):
         _pre_tool("allow", "AgentGuards: approved earlier this session")
 
+    # The user is about to be asked. Record that, so if the command then runs we know
+    # it carried a real approval — and if it never runs, nothing is remembered.
+    _mark_pending(session_id, command)
     _pre_tool(
         "ask",
         f"{reason}\n\n    {shown}",
@@ -716,9 +897,10 @@ def handle_post_tool_use(event: dict) -> None:
         return
     if tool_name == "Bash":
         command = event.get("tool_input", {}).get("command", "")
-        # A Bash command already ran (= it was allowed/approved), so remember its
-        # binaries for this session to skip re-asking next time.
-        _remember_binaries(event.get("session_id", ""), _command_binaries(command))
+        # If the user was asked about THIS command and it then ran, that is a real
+        # approval — remember its binaries. A command that ran without being asked
+        # (safe baseline) is deliberately not remembered.
+        _redeem_pending(event.get("session_id", ""), command)
         # curl/wget etc. fetch web content the same way WebFetch does — scan it
         # here too, deterministically. Do NOT rely on the model cooperatively
         # calling the MCP check_input tool for this.
