@@ -580,11 +580,17 @@ def handle_web_content(event: dict) -> None:
         )
 
     if decision not in ("allow",):
-        # Server composes the full structured panel; print it + a snippet of the content.
+        # Server composes the full structured panel; print THAT and nothing else.
+        #
+        # Deliberately NOT appending result["flagged_input"] here, unlike the prompt
+        # path. On the prompt path the flagged text is the user's own input and
+        # quoting it back is the whole point. Here it is fetched web content: the
+        # server's excerpt is the first 240 characters of the page, so echoing it
+        # into a field the model reads hands an attacker a guaranteed 240-char
+        # channel into context — carrying AgentGuards' own framing — from a page we
+        # just decided was too dangerous to show. That defeats the block.
         message = result.get("message") or "🛡️ [AgentGuards] Web content blocked\nDecision: block\nReason: policy - flagged by AgentGuards guardrails\nSeverity: high"
-        flagged = result.get("flagged_input")
-        detail = f"{message}\n\n    {flagged}" if flagged else message
-        _post_tool_block(detail, "[AgentGuards: web content withheld]")
+        _post_tool_block(message, "[AgentGuards: web content withheld]")
     _allow()
 
 

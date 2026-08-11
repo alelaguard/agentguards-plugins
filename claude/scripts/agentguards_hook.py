@@ -32,10 +32,18 @@ Configure in ~/.claude/settings.json:
 
 The PostToolUse matcher covers the built-in WebFetch/WebSearch tools, whose fetched
 content is scanned with use_case="web_fetch" and redacted if AgentGuards flags it.
-Bash commands get the same scan when they invoke a fetch binary (curl, wget, etc.) —
-this does NOT rely on the model cooperatively calling the MCP check_input tool; it is
-enforced here in the hook regardless of what the model does. Other Bash commands only
-update the session-approval cache.
+That path does not depend on the model cooperatively calling the MCP check_input
+tool — the hook runs whatever the model does.
+
+Bash commands get the same scan when the leading binary of a pipeline segment is a
+known fetch binary (curl, wget, ...). Be precise about what that does and does not
+cover: the check is a binary-NAME match (see _is_fetch_command), so a fetch reached
+any other way is not scanned. `bash -c "curl ..."`, `sudo curl`, `xargs curl`,
+`$(curl ...)`, and `python3 -c "import urllib..."` all fetch content that this hook
+does not see. Wrapper prefixes are stripped to narrow the gap, but a name-based check
+cannot close it; only scanning all Bash stdout would, at a round-trip per command.
+Do not restate this as blanket enforcement — it is enforcement of the common case.
+Other Bash commands only update the session-approval cache.
 
 Write/Edit/MultiEdit are scanned for SAST findings and secrets (semgrep + gitleaks,
 run server-side on a separate host) via /v1/code/scan. This is a paid, opt-in
@@ -258,11 +266,23 @@ def _allow() -> None:
 
 
 def _post_tool_block(reason: str, redacted: str) -> None:
-    # PostToolUse cannot hard-block (the tool already ran) and exit code 2 is a
-    # NO-OP for PostToolUse — so we must use exit 0 + JSON. "updatedToolOutput"
-    # replaces the tool result so the model never sees the poisoned content;
-    # "decision": "block" tells the model it was withheld. (Do NOT use the exit-2
-    # _block() helper here — that only blocks at PreToolUse/UserPromptSubmit.)
+    # PostToolUse cannot hard-block: the tool already ran, and neither exit 2 nor
+    # "decision": "block" undoes that. Per Claude Code's hook reference, exit 2 and
+    # "decision": "block" at PostToolUse both only surface a message to the model —
+    # they are advisory. "updatedToolOutput" is the one field that actually replaces
+    # the tool result the model reads. (Do NOT use the exit-2 _block() helper here;
+    # that blocks only at PreToolUse/UserPromptSubmit.)
+    #
+    # So withholding rests entirely on updatedToolOutput, and two caveats apply:
+    #
+    #   * It has NOT been verified end-to-end that the swap reaches the model on
+    #     large responses. A block observed in the field arrived with the original
+    #     content still in context. Until that is settled, treat this as "the model
+    #     is TOLD not to act on it", not "the model cannot see it".
+    #   * `reason` is shown to the model verbatim, and callers have historically
+    #     built it from the server's flagged_input — a 240-char excerpt of the very
+    #     content being withheld, taken from the START of the page, i.e. the part an
+    #     attacker chooses. Never put fetched content in `reason`.
     print(
         json.dumps(
             {
@@ -592,11 +612,20 @@ def handle_web_content(event: dict) -> None:
         )
 
     if decision not in ("allow",):
-        # Server composes the full structured panel; print it + a snippet of the content.
+        # Server composes the full structured panel; print THAT and nothing else.
+        #
+        # Deliberately NOT appending result["flagged_input"] here, unlike the prompt
+        # path. On the prompt path the flagged text is the user's own input and
+        # quoting it back is the whole point. Here it is fetched web content: the
+        # server's excerpt is the first 240 characters of the page, so echoing it
+        # into a field the model reads hands an attacker a guaranteed 240-char
+        # channel into context — carrying AgentGuards' own framing — from a page we
+        # just decided was too dangerous to show. That defeats the block.
+        #
+        # The user can still see what was fetched; they have the URL and the tool
+        # call. It is the MODEL that must not receive the payload.
         message = result.get("message") or "🛡️ [AgentGuards] Web content blocked\nDecision: block\nReason: policy - flagged by AgentGuards guardrails\nSeverity: high"
-        flagged = result.get("flagged_input")
-        detail = f"{message}\n\n    {flagged}" if flagged else message
-        _post_tool_block(detail, "[AgentGuards: web content withheld]")
+        _post_tool_block(message, "[AgentGuards: web content withheld]")
     _allow()
 
 

@@ -1,6 +1,6 @@
 {
   "name": "@agentguardsco/claude-selfhosted-plugin",
-  "version": "0.1.0",
+  "version": "0.1.4",
   "description": "LLM security guardrails for Claude Code, for a self-hosted AgentGuards appliance — enforced entirely by hooks, no bundled MCP server.",
   "license": "MIT",
   "homepage": "https://agentguards.co",
