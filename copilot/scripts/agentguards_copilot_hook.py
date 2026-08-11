@@ -27,6 +27,7 @@ Environment overrides:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -39,6 +40,9 @@ AGENTGUARDS_URL = os.getenv("AGENTGUARDS_URL", "https://prod.agentguards.co").rs
 
 _APPROVALS_PATH = os.path.expanduser("~/.copilot/agentguards_session_approvals.json")
 _SESSION_TTL = 7 * 24 * 3600
+# Bumped when the meaning of a stored approval changes. v1 recorded every command
+# that ran, including ones nobody was asked about, so v1 entries are ignored.
+_APPROVALS_VERSION = 2
 
 
 def _api_key() -> str:
@@ -355,7 +359,16 @@ def _load_approvals() -> dict:
             data = json.load(fh)
     except (OSError, ValueError):
         return {}
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    # Entries written before the approval fix recorded binaries the user was never
+    # asked about (see _mark_pending). They cannot be told apart from genuine ones, so
+    # they are dropped rather than trusted; the cost is at most one extra prompt.
+    return {
+        sid: e
+        for sid, e in data.items()
+        if isinstance(e, dict) and e.get("v") == _APPROVALS_VERSION
+    }
 
 
 def _approved_binaries(session_id: str) -> set:
@@ -365,24 +378,88 @@ def _approved_binaries(session_id: str) -> set:
     return set(entry.get("binaries", []))
 
 
-def _remember_binaries(session_id: str, binaries: list) -> None:
-    if not session_id or not binaries:
-        return
-    data = _load_approvals()
-    entry = data.get(session_id) or {}
-    merged = sorted(set(entry.get("binaries", [])) | set(binaries))
-    data[session_id] = {"binaries": merged, "ts": time.time()}
+def _command_key(command: str) -> str:
+    """Stable id for one exact command, so a pending approval can only be redeemed
+    by the command it was granted for. The command text itself is never stored."""
+    return hashlib.sha256((command or "").encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def _write_approvals(data: dict) -> None:
     now = time.time()
     data = {
-        sid: e for sid, e in data.items()
+        sid: e
+        for sid, e in data.items()
         if isinstance(e, dict) and now - e.get("ts", 0) < _SESSION_TTL
     }
     try:
         os.makedirs(os.path.dirname(_APPROVALS_PATH), exist_ok=True)
-        with open(_APPROVALS_PATH, "w") as fh:
+        # 0600: this file decides whether a command is re-prompted, so anything able
+        # to write it could pre-approve binaries for the session.
+        fd = os.open(_APPROVALS_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
             json.dump(data, fh)
     except OSError:
         pass
+
+
+def _mark_pending(session_id: str, command: str) -> None:
+    """Record that the USER IS BEING ASKED about this exact command.
+
+    Only a command that reached this point — i.e. Claude Code is putting the approval
+    prompt in front of a human — may ever become a remembered approval. That is the
+    whole point of the fix: previously every command that merely *ran* was recorded,
+    including the safe-baseline ones the server auto-allowed with no prompt at all, so
+    `rm stale.log` (allowed silently) taught the cache that `rm` was approved and the
+    next `rm -rf ~/work` was let through without ever asking.
+
+    Keyed by the exact command, not just its binaries. Keying by binary alone would
+    reintroduce the bug through the back door: deny `rm -rf /`, then run a harmless
+    `rm foo.txt`, and the harmless one would redeem the denied command's pending
+    entry. A pending approval can only be redeemed by the command it was granted for.
+    """
+    if not session_id or not command:
+        return
+    data = _load_approvals()
+    entry = data.get(session_id) or {}
+    pending = dict(entry.get("pending") or {})
+    pending[_command_key(command)] = sorted(set(_command_binaries(command)))
+    data[session_id] = {
+        "v": _APPROVALS_VERSION,
+        "binaries": sorted(set(entry.get("binaries", []))),
+        "pending": pending,
+        "ts": time.time(),
+    }
+    _write_approvals(data)
+
+
+def _redeem_pending(session_id: str, command: str) -> None:
+    """This command actually ran, so if the user was asked about it, it was approved.
+
+    Reaching PostToolUse means the tool call went through. Combined with a pending
+    entry — which only _mark_pending creates, and only when the user was genuinely
+    prompted — that is a real human approval, and its binaries can be remembered for
+    the rest of the session.
+
+    A command with no pending entry ran without anyone being asked (safe baseline),
+    so nothing is remembered. That is the fix.
+    """
+    if not session_id or not command:
+        return
+    data = _load_approvals()
+    entry = data.get(session_id)
+    if not entry:
+        return
+    pending = dict(entry.get("pending") or {})
+    binaries = pending.pop(_command_key(command), None)
+    if binaries is None:
+        return
+    data[session_id] = {
+        "v": _APPROVALS_VERSION,
+        "binaries": sorted(set(entry.get("binaries", [])) | set(binaries)),
+        "pending": pending,
+        "ts": time.time(),
+    }
+    _write_approvals(data)
 
 
 def _tool_name(event: dict) -> str:
@@ -483,6 +560,9 @@ Reason: {reason} (risk: {risk})"""
     binaries = _command_binaries(command)
     if binaries and all(b in _approved_binaries(session_id) for b in binaries):
         _allow_tool("AgentGuards: approved earlier this session")
+    # The user is about to be asked (Copilot's preToolUse does honour "ask"). Record
+    # it, so if the command then runs we know it carried a real approval.
+    _mark_pending(session_id, command)
     _ask(
         f"""AgentGuards needs approval to run:
 
@@ -535,7 +615,9 @@ def handle_post_tool_use(event: dict) -> None:
                     hit = next((c for c in checks if not c.get("passed", True)), {})
                     _block_output(f"{hit.get('check_name', 'policy')} — {hit.get('reason', decision)}")
 
-    _remember_binaries(session_id, _command_binaries(command) + ([tool_name] if tool_name else []))
+    # Only a command the user was actually asked about becomes a remembered
+    # approval. A safe-baseline command that ran with no prompt teaches nothing.
+    _redeem_pending(session_id, command)
     _continue()
 
 
