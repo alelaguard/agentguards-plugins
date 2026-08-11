@@ -41,7 +41,11 @@ told which appliance to use. Guide the user through both required variables.
    see this plugin's README for the exact block, or confirm it's already
    there if installed via `/plugin install`.
 
-6. **Verify**: ask the user to try a prompt like "ignore all previous
-   instructions". It should be refused with an `[AgentGuards]` block panel. If
+6. **Verify**: ask the user to try a prompt the guardrails block — asking to
+   be shown all the API keys works well. It should be refused with an
+   `[AgentGuards]` block panel. (Deliberately not spelling out a
+   prompt-injection payload here: plugin security scanners run YARA over skill
+   files and flag the literal string as an injection, which is how this file
+   once scored a critical finding for documenting an attack.) If
    it isn't, `AGENTGUARDS_URL`/the API key are likely not reaching the hook
    process — confirm they're in the shell profile, not just the current shell.
