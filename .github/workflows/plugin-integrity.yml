@@ -56,6 +56,50 @@ jobs:
           done
           [ "$fail" -eq 0 ] || exit 1
 
+      - name: README version table matches the manifests
+        shell: bash
+        run: |
+          set -uo pipefail
+          # The table in README.md is the only place a user can see what version a
+          # plugin is at. A number written by hand in a doc is a second source of
+          # truth, and this repo already learned what those cost: package.json drifted
+          # three releases behind plugin.json, and npm sat fourteen behind git. So the
+          # table is checked rather than trusted.
+          python3 - <<'CHECK'
+          import json, pathlib, re, sys
+
+          MANIFESTS = {
+              "claude": ".claude-plugin/plugin.json",
+              "claude-selfhosted": ".claude-plugin/plugin.json",
+              "codex": ".codex-plugin/plugin.json",
+              "codex-selfhosted": ".codex-plugin/plugin.json",
+              "copilot": "plugin.json",
+              "copilot-selfhosted": "plugin.json",
+              "gemini": "gemini-extension.json",
+              "gemini-selfhosted": "gemini-extension.json",
+              "opencode": "package.json",
+          }
+          readme = pathlib.Path("README.md").read_text()
+          rows = dict(re.findall(r"\]\(\./([a-z-]+)\)[^|]*\|[^|]*\|[^|]*\|\s*`([0-9]+\.[0-9]+\.[0-9]+)`", readme))
+
+          fail = False
+          for plugin, manifest in sorted(MANIFESTS.items()):
+              actual = json.load(open(f"{plugin}/{manifest}"))["version"]
+              listed = rows.get(plugin)
+              if listed is None:
+                  print(f"::error file=README.md::{plugin} is missing from the README version table")
+                  fail = True
+              elif listed != actual:
+                  print(f"::error file=README.md::{plugin} is {actual} but README says {listed}")
+                  fail = True
+              else:
+                  print(f"  ok  {plugin}  {actual}")
+          for extra in sorted(set(rows) - set(MANIFESTS)):
+              print(f"::error file=README.md::README lists {extra}, which is not a plugin directory")
+              fail = True
+          sys.exit(1 if fail else 0)
+          CHECK
+
       - name: no undefined names in any hook
         shell: bash
         run: |
