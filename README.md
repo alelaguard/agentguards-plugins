@@ -10,12 +10,12 @@ fail-open (availability-first) with a single environment variable.
 
 | Plugin | Agent | Deployment | Version | Description |
 |---|---|---|---|---|
-| [`agentguards-claude`](./claude) | Claude Code | hosted | `0.2.23` | MCP server + enforcing hooks (input, Bash, web-content) and security instructions. |
+| [`agentguards-claude`](./claude) | Claude Code | hosted | `0.2.24` | MCP server + enforcing hooks (input, Bash, web-content) and security instructions. |
 | [`agentguards-codex`](./codex) | OpenAI Codex | hosted | `0.2.11` | Enforcing hooks (input, shell, web-content) + MCP server and security instructions. |
 | [`agentguards-gemini`](./gemini) | Gemini CLI | hosted | `0.1.6` | MCP server + enforcing hooks (input, tool-call, web-content) and security instructions. |
 | [`agentguards-copilot`](./copilot) | GitHub Copilot CLI | hosted | `0.1.5` | MCP server + enforcing hooks (input, shell, web-content) and security instructions. |
 | [`@agentguardsco/opencode-plugin`](./opencode) | OpenCode | hosted | `0.1.5` | Enforcing plugin (prompt, `bash`, web-content), + MCP server and security instructions. |
-| [`agentguards-claude-selfhosted`](./claude-selfhosted) | Claude Code | self-hosted | `0.1.8` | Hooks only — no bundled MCP server, and no default URL, so it can never talk to the hosted service by accident. |
+| [`agentguards-claude-selfhosted`](./claude-selfhosted) | Claude Code | self-hosted | `0.1.9` | Hooks only — no bundled MCP server, and no default URL, so it can never talk to the hosted service by accident. |
 | [`agentguards-codex-selfhosted`](./codex-selfhosted) | OpenAI Codex | self-hosted | `0.1.4` | Hooks only — no bundled MCP server, and no default URL. |
 | [`agentguards-gemini-selfhosted`](./gemini-selfhosted) | Gemini CLI | self-hosted | `0.1.3` | Hooks only — no bundled MCP server, and no default URL. |
 | [`agentguards-copilot-selfhosted`](./copilot-selfhosted) | GitHub Copilot CLI | self-hosted | `0.1.3` | Hooks only — no bundled MCP server, and no default URL. |

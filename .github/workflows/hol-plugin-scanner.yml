@@ -16,9 +16,12 @@ jobs:
     # Was pinned to "codex" alone, so eight of the nine plugins shipped unscanned —
     # including both Claude plugins, which have by far the most installs.
     #
-    # Turning them all on at once revealed that most sit below the 80 threshold that
-    # codex meets: claude 71, claude-selfhosted 66, copilot 50, copilot-selfhosted 43,
-    # opencode 39, and codex-selfhosted failing on a finding rather than a score.
+    # Several sit below the 80 threshold codex meets, and for most of them that is
+    # structural rather than fixable: claude-selfhosted caps at 78 because it has no
+    # MCP server to score (the whole point of the variant), and copilot/opencode score
+    # 0/25 on Manifest Validation because this scanner looks for .codex-plugin/ and
+    # they keep valid manifests elsewhere. Raising those would mean breaking working
+    # plugins to satisfy a rubric that does not cover them.
     # Those are packaging/completeness gaps (codex has the LICENSE, SECURITY.md,
     # assets and full interface metadata the others lack), not newly-introduced
     # vulnerabilities — none of them regressed here, they were simply never measured.
@@ -38,7 +41,7 @@ jobs:
           - { plugin_dir: gemini, blocking: true }
           - { plugin_dir: gemini-selfhosted, blocking: true }
           - { plugin_dir: codex-selfhosted, blocking: true }
-          - { plugin_dir: claude, blocking: false }
+          - { plugin_dir: claude, blocking: true }
           - { plugin_dir: claude-selfhosted, blocking: false }
           - { plugin_dir: copilot, blocking: false }
           - { plugin_dir: copilot-selfhosted, blocking: false }
