@@ -622,11 +622,12 @@ def handle_before_agent(event: dict) -> None:
 
     decision = result.get("decision", "allow")
     if decision in ("block", "escalate"):
-        # Server composes the full structured panel; print it + the flagged input.
-        message = result.get("message") or "🛡️ [AgentGuards] Prompt blocked\nDecision: block\nReason: policy - flagged by AgentGuards guardrails\nSeverity: high"
-        flagged = result.get("flagged_input")
-        detail = f"{message}\n\n    {flagged}" if flagged else message
-        _block(detail, "[AgentGuards] Prompt blocked")
+        # Deliberately not appending result["flagged_input"]. The user just typed
+        # this prompt — echoing it back adds a line they already know, to a message
+        # the host has already prefixed with its own preamble and the whole hook
+        # command. The field is still in the API response for anything programmatic.
+        message = result.get("message") or "🛡️ [AgentGuards] Prompt blocked\nReason: policy - flagged by AgentGuards guardrails"
+        _block(message, "[AgentGuards] Prompt blocked")
     _allow()
 
 

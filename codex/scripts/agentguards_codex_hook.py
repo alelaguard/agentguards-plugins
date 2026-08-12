@@ -664,11 +664,12 @@ def handle_user_prompt(event: dict) -> None:
             f"fail-closed. {_unreachable_remedy(exc)}"
         )
     if result.get("decision", "allow") in ("block", "escalate", "redact"):
-        # Server composes the full structured panel; print it + the flagged input.
-        message = result.get("message") or "🛡️ [AgentGuards] Prompt blocked\nDecision: block\nReason: policy - flagged by AgentGuards guardrails\nSeverity: high"
-        flagged = result.get("flagged_input")
-        text = f"{message}\n\n    {flagged}" if flagged else message
-        _block_prompt(text)
+        # Deliberately not appending result["flagged_input"]. The user just typed
+        # this prompt — echoing it back adds a line they already know, to a message
+        # the host has already prefixed with its own preamble and the whole hook
+        # command. The field is still in the API response for anything programmatic.
+        message = result.get("message") or "🛡️ [AgentGuards] Prompt blocked\nReason: policy - flagged by AgentGuards guardrails"
+        _block_prompt(message)
     _continue()
 
 
