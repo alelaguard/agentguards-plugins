@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ \"$OS\" = \"Windows_NT\" ]; then PS=powershell; command -v powershell >/dev/null 2>&1 || PS=pwsh; \"$PS\" -NoProfile -ExecutionPolicy Bypass -File \"${CLAUDE_PLUGIN_ROOT}/scripts/agentguards_hook.ps1\" UserPromptSubmit; elif command -v python3 >/dev/null 2>&1; then python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/agentguards_hook.py\" UserPromptSubmit; else echo \"AgentGuards: Python is not installed - guardrails are OFF for this message. Install it from https://www.python.org/downloads/ then fully quit and reopen Claude. Tell the user this: they are not protected.\"; fi"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/run-hook.sh\" UserPromptSubmit"
           }
         ]
       }
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ \"$OS\" = \"Windows_NT\" ]; then PS=powershell; command -v powershell >/dev/null 2>&1 || PS=pwsh; \"$PS\" -NoProfile -ExecutionPolicy Bypass -File \"${CLAUDE_PLUGIN_ROOT}/scripts/agentguards_hook.ps1\" PreToolUse; elif command -v python3 >/dev/null 2>&1; then python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/agentguards_hook.py\" PreToolUse; else echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\",\"permissionDecisionReason\":\"AgentGuards: Python is not installed - command authorization is OFF. Install it from https://www.python.org/downloads/ and restart Claude. Tell the user this: they are not protected.\"}}'; fi"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/run-hook.sh\" PreToolUse"
           }
         ]
       }
@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ \"$OS\" = \"Windows_NT\" ]; then PS=powershell; command -v powershell >/dev/null 2>&1 || PS=pwsh; \"$PS\" -NoProfile -ExecutionPolicy Bypass -File \"${CLAUDE_PLUGIN_ROOT}/scripts/agentguards_hook.ps1\" PostToolUse; elif command -v python3 >/dev/null 2>&1; then python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/agentguards_hook.py\" PostToolUse; fi"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/run-hook.sh\" PostToolUse"
           }
         ]
       }
