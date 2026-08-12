@@ -663,11 +663,12 @@ AgentGuards is unreachable ({exc}) and the hook is fail-closed.
     decision = result.get("decision", "allow")
     if decision in ("block", "escalate"):
         # The server composes the full structured panel (shield + heading + Decision/
-        # Reason/Severity); print it verbatim, then the flagged input.
-        message = result.get("message") or "🛡️ [AgentGuards] Prompt blocked\nDecision: block\nReason: policy - flagged by AgentGuards guardrails\nSeverity: high"
-        flagged = result.get("flagged_input")
-        body = message + (f"\n\n    {flagged}" if flagged else "")
-        _block(body)
+        # Deliberately not appending result["flagged_input"]. The user just typed
+        # this prompt — echoing it back adds a line they already know, to a message
+        # the host has already prefixed with its own preamble and the whole hook
+        # command. The field is still in the API response for anything programmatic.
+        message = result.get("message") or "🛡️ [AgentGuards] Prompt blocked\nReason: policy - flagged by AgentGuards guardrails"
+        _block(message)
     _allow()
 
 

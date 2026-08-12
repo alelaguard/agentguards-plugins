@@ -2,7 +2,7 @@
   "name": "agentguards-claude-selfhosted",
   "displayName": "AgentGuards (Self-Hosted)",
   "description": "LLM security guardrails for Claude Code, for a self-hosted AgentGuards appliance — jailbreak detection, prompt-injection and web-content scanning, data-exfiltration blocking, and destructive-command authorization, enforced entirely by hooks. No bundled MCP server: Claude Code's .mcp.json cannot point at a per-installation URL, so a shared one would silently talk to AgentGuards' SaaS instead of your appliance. Use agentguards-claude instead if you're on the hosted product.",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "author": {
     "name": "AgentGuards",
     "email": "support@agentguards.co",
