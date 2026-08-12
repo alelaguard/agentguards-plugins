@@ -369,6 +369,40 @@ def _only_pii_failed(result: dict) -> bool:
     return bool(failing) and all(c.get("check_name") in _PII_CHECKS for c in failing)
 
 
+def _configured() -> bool:
+    """Whether the hook has what it needs to call AgentGuards at all."""
+    return bool(AGENTGUARDS_URL and AGENTGUARDS_API_KEY)
+
+
+def _unconfigured_allow(what: str) -> None:
+    """No key configured: let the tool result through, and never block on it.
+
+    This mirrors the decision made for prompts and PreToolUse (see main()): "no key
+    at all" is a setup gap, not a security event, so it must not behave like one.
+
+    It used to block here, and the result was the worst possible first run — install
+    the plugin, don't set a key yet, and every single Write, Edit and WebFetch comes
+    back reported as blocked by AgentGuards. Worse, it was incoherent: the prompt path
+    was already letting unscanned prompts straight through with a warning, so blocking
+    the fetch bought no safety at all. It only taught the user that AgentGuards breaks
+    their tools, which is how a security plugin gets uninstalled.
+
+    Note what is NOT changed: a key that is present but rejected (401), or a service
+    that is unreachable, still fail CLOSED further down. Those are real signals about
+    a configured install. This branch is only ever reached when nothing is set up.
+
+    No per-tool message, deliberately: UserPromptSubmit already prints the "guardrails
+    are OFF — tell the user they are not protected" warning on every prompt, so the
+    user is told. Repeating it per tool call would be noise, and stderr on exit 0
+    reaches only the debug log anyway.
+    """
+    print(
+        f"AgentGuards: no API key configured — {what} not scanned, allowing.",
+        file=sys.stderr,
+    )
+    _allow()
+
+
 def _fail_open() -> bool:
     # Escape hatch: when the service is unreachable, AGENTGUARDS_FAIL_OPEN=true
     # restores the old allow-on-error behavior. Default is fail-CLOSED (block).
@@ -737,13 +771,8 @@ def handle_web_content(event: dict) -> None:
     if not text.strip():
         _allow()
 
-    if not AGENTGUARDS_URL or not AGENTGUARDS_API_KEY:
-        if _fail_open():
-            _allow()
-        _post_tool_block(
-            "AgentGuards not configured (fail-closed)",
-            "[AgentGuards: web content withheld — hook not configured]",
-        )
+    if not _configured():
+        _unconfigured_allow("web content")
 
     try:
         result = _post(
@@ -842,13 +871,8 @@ def handle_code_scan(event: dict) -> None:
 
     print(f"AgentGuards: scanning {file_path or 'file'} for security issues...", file=sys.stderr)
 
-    if not AGENTGUARDS_URL or not AGENTGUARDS_API_KEY:
-        if _fail_open():
-            _allow()
-        _post_tool_block(
-            "AgentGuards not configured (fail-closed)",
-            "[AgentGuards: code scan withheld — hook not configured]",
-        )
+    if not _configured():
+        _unconfigured_allow("code scan")
 
     try:
         result = _post(
