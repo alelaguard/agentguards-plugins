@@ -109,6 +109,20 @@ jobs:
           # start failing over formatting, or it will be silenced and stop catching
           # the thing it is here for.
 
+      - name: hook behaviour tests
+        shell: bash
+        run: |
+          set -uo pipefail
+          # Loads each shipped hook and drives its handlers. Every case corresponds to
+          # a bug that reached users and was found by a person, not by CI: an approval
+          # nobody gave, a fetch that was never scanned, a blocked page quoted back to
+          # the model, and an unconfigured install that blocked every file write.
+          #
+          # Asserted against the files that SHIP, per plugin — because two of those
+          # bugs were fixed in the monorepo and never reached the published plugin.
+          # "Fixed" and "shipped" are different claims and only this can tell them apart.
+          pipx run --spec pytest pytest tests/ -q
+
       - name: manifests validate
         shell: bash
         run: |
