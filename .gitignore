@@ -8,3 +8,10 @@ __pycache__/
 config/
 checks.yaml
 checks.yml
+
+# e2e plugin smoke test: the code is committed and public (same as
+# tests/test_hook_security_behaviour.py), but a run's output can capture the
+# live AGENTGUARDS_API_KEY the container ran with, or tenant-specific block
+# text — never commit a transcript, only the harness that produces one.
+tests/e2e/output/
+tests/e2e/.venv/
