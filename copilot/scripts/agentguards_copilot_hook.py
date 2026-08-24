@@ -34,6 +34,7 @@ import re
 import ssl
 import sys
 import time
+import urllib.error
 import urllib.request
 
 AGENTGUARDS_URL = os.getenv("AGENTGUARDS_URL", "https://prod.agentguards.co").rstrip("/")
@@ -149,6 +150,20 @@ def _unreachable_remedy(exc: BaseException) -> str:
     return "Set AGENTGUARDS_FAIL_OPEN=true to allow requests while the service is down."
 
 
+class QuotaExceededError(Exception):
+    """API returned 429 QUOTA_EXCEEDED — a real quota block, not a service outage.
+
+    Kept separate so it never reaches the "service unreachable" branch: the service is
+    healthy and fail-open advice is wrong here. The server composes the sentence that
+    says what to do about it (upgrade, or wait for the monthly reset on a paid plan),
+    so carry it through verbatim.
+    """
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.user_message = message
+
+
 def _post(path: str, payload: dict) -> dict:
     req = urllib.request.Request(
         f"{AGENTGUARDS_URL}{path}",
@@ -156,8 +171,20 @@ def _post(path: str, payload: dict) -> dict:
         headers={"Content-Type": "application/json", "X-API-Key": _api_key()},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=10, context=_ssl_context()) as resp:
-        return json.loads(resp.read())
+    try:
+        with urllib.request.urlopen(req, timeout=10, context=_ssl_context()) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        if exc.code == 429:
+            try:
+                body = json.loads(exc.read())
+            except Exception:
+                body = {}
+            if body.get("error") == "QUOTA_EXCEEDED":
+                raise QuotaExceededError(
+                    body.get("message") or "Request quota reached."
+                ) from None
+        raise
 
 
 def _continue() -> None:
@@ -500,6 +527,8 @@ def handle_user_prompt_submitted(event: dict) -> None:
         _continue()
     try:
         result = _post("/v1/guardrails/evaluate-input", {"text": prompt, "use_case": "check"})
+    except QuotaExceededError as exc:
+        _block_prompt(f"[AgentGuards] Request quota reached: {exc.user_message}")
     except Exception as exc:
         if _fail_open():
             print(f"AgentGuards: service unreachable ({exc}), allowing prompt (AGENTGUARDS_FAIL_OPEN=true)", file=sys.stderr)
@@ -535,6 +564,8 @@ def handle_pre_tool_use(event: dict) -> None:
                 "parameters": {"command": command},
             },
         )
+    except QuotaExceededError as exc:
+        _deny(f"AgentGuards request quota reached: {exc.user_message}")
     except Exception as exc:
         if _fail_open():
             print(f"AgentGuards: service unreachable ({exc}), allowing tool call (AGENTGUARDS_FAIL_OPEN=true)", file=sys.stderr)
@@ -585,6 +616,11 @@ def handle_post_tool_use(event: dict) -> None:
                 result = _post(
                     "/v1/guardrails/evaluate-input",
                     {"text": text, "use_case": "web_fetch", "channel": "copilot_cli"},
+                )
+            except QuotaExceededError as exc:
+                _block_output(
+                    f"AgentGuards request quota reached: {exc.user_message} "
+                    "Fetched web content withheld."
                 )
             except Exception as exc:
                 if _fail_open():

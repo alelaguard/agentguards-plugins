@@ -251,7 +251,7 @@ async function post(path: string, payload: Record<string, unknown>, timeoutMs = 
     if (res.status === 429) {
       const body = await res.json().catch(() => ({}) as any)
       if (body.error === "QUOTA_EXCEEDED") {
-        throw new QuotaExceededError(body.message || "Monthly request quota reached.")
+        throw new QuotaExceededError(body.message || "Request quota reached.")
       }
     }
     if (res.status === 403) {
@@ -404,7 +404,7 @@ export const AgentGuards: Plugin = async ({ client }) => {
         result = await post("/v1/guardrails/evaluate-input", { text, use_case: "opencode" })
       } catch (err) {
         if (err instanceof QuotaExceededError) {
-          return blockPrompt(input.sessionID, parts, `**[AgentGuards] Monthly quota reached**\n${err.userMessage}`)
+          return blockPrompt(input.sessionID, parts, `**[AgentGuards] Request quota reached**\n${err.userMessage}`)
         }
         if (failOpen()) return
         return blockPrompt(
@@ -443,7 +443,7 @@ export const AgentGuards: Plugin = async ({ client }) => {
         })
       } catch (err) {
         if (err instanceof QuotaExceededError) {
-          await blockTool(`**[AgentGuards] Monthly quota reached**\n${err.userMessage}`)
+          await blockTool(`**[AgentGuards] Request quota reached**\n${err.userMessage}`)
         }
         if (failOpen()) return
         await blockTool(
@@ -546,7 +546,9 @@ export const AgentGuards: Plugin = async ({ client }) => {
         result = await post("/v1/guardrails/evaluate-input", { text, use_case: "opencode", channel: "opencode" })
       } catch (err) {
         if (err instanceof QuotaExceededError) {
-          output.output = "[AgentGuards: web content withheld -- monthly request quota reached]"
+          // Carry the server's sentence through: it is the only thing that says how to
+          // fix this, and on the free plan there is no reset to wait for.
+          output.output = `[AgentGuards: web content withheld -- request quota reached]\n${err.userMessage}`
           return
         }
         if (failOpen()) return

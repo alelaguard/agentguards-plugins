@@ -265,7 +265,7 @@ def _post(path: str, payload: dict, *, timeout: int = 10) -> dict:
             except Exception:
                 body = {}
             if body.get("error") == "QUOTA_EXCEEDED":
-                raise QuotaExceededError(body.get("message") or "Monthly request quota reached.")
+                raise QuotaExceededError(body.get("message") or "Request quota reached.")
         if exc.code == 403:
             try:
                 body = json.loads(exc.read())
@@ -648,7 +648,7 @@ def handle_user_prompt(event: dict) -> None:
     try:
         result = _post("/v1/guardrails/evaluate-input", {"text": prompt, "use_case": "claude_code"})
     except QuotaExceededError as exc:
-        _block(f"""**[AgentGuards] Monthly quota reached**
+        _block(f"""**[AgentGuards] Request quota reached**
 {exc.user_message}""")
     except Exception as exc:
         if _fail_open():
@@ -685,7 +685,7 @@ def handle_pre_tool_use(event: dict) -> None:
             {"action": "shell_command", "tool": "Bash", "parameters": {"command": command}},
         )
     except QuotaExceededError as exc:
-        _block(f"""**[AgentGuards] Monthly quota reached**
+        _block(f"""**[AgentGuards] Request quota reached**
 {exc.user_message}""")
     except Exception as exc:
         if _fail_open():
@@ -782,8 +782,8 @@ def handle_web_content(event: dict) -> None:
         )
     except QuotaExceededError as exc:
         _post_tool_block(
-            f"AgentGuards monthly quota reached — {exc.user_message}",
-            "[AgentGuards: web content withheld — monthly request quota reached]",
+            f"AgentGuards request quota reached — {exc.user_message}",
+            "[AgentGuards: web content withheld — request quota reached]",
         )
     except Exception as exc:
         if _fail_open():
@@ -887,8 +887,8 @@ def handle_code_scan(event: dict) -> None:
         _allow()
     except QuotaExceededError as exc:
         _post_tool_block(
-            f"AgentGuards monthly quota reached — {exc.user_message}",
-            "[AgentGuards: code scan withheld — monthly request quota reached]",
+            f"AgentGuards request quota reached — {exc.user_message}",
+            "[AgentGuards: code scan withheld — request quota reached]",
         )
     except Exception as exc:
         if _fail_open():
