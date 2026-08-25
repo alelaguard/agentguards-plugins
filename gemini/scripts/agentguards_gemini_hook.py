@@ -217,7 +217,7 @@ def _post(path: str, payload: dict, *, timeout: int = 10) -> dict:
             except Exception:
                 body = {}
             if body.get("error") == "QUOTA_EXCEEDED":
-                raise QuotaExceededError(body.get("message") or "Monthly request quota reached.")
+                raise QuotaExceededError(body.get("message") or "Request quota reached.")
         if exc.code == 403:
             try:
                 body = json.loads(exc.read())
@@ -460,8 +460,8 @@ def _scan_web_content(tool_name: str, tool_response) -> None:
         )
     except QuotaExceededError as exc:
         _block(
-            f"AgentGuards monthly quota reached: {exc.user_message}",
-            f"[AgentGuards] Monthly quota reached — {exc.user_message}",
+            f"AgentGuards request quota reached: {exc.user_message}",
+            f"[AgentGuards] Request quota reached — {exc.user_message}",
         )
     except Exception as exc:
         if _fail_open():
@@ -575,8 +575,8 @@ def _scan_code(tool_input: dict) -> None:
         return
     except QuotaExceededError as exc:
         _block(
-            f"AgentGuards monthly quota reached: {exc.user_message}",
-            f"[AgentGuards] Monthly quota reached — {exc.user_message}",
+            f"AgentGuards request quota reached: {exc.user_message}",
+            f"[AgentGuards] Request quota reached — {exc.user_message}",
         )
     except Exception as exc:
         if _fail_open():
@@ -607,8 +607,8 @@ def handle_before_agent(event: dict) -> None:
         result = _post("/v1/guardrails/evaluate-input", {"text": prompt, "use_case": "gemini_cli"})
     except QuotaExceededError as exc:
         _block(
-            f"AgentGuards monthly quota reached: {exc.user_message}",
-            f"[AgentGuards] Monthly quota reached — {exc.user_message}",
+            f"AgentGuards request quota reached: {exc.user_message}",
+            f"[AgentGuards] Request quota reached — {exc.user_message}",
         )
     except Exception as exc:
         if _fail_open():
@@ -648,8 +648,8 @@ def handle_before_tool(event: dict) -> None:
         )
     except QuotaExceededError as exc:
         _block(
-            f"AgentGuards monthly quota reached: {exc.user_message}",
-            f"[AgentGuards] Monthly quota reached — {exc.user_message}",
+            f"AgentGuards request quota reached: {exc.user_message}",
+            f"[AgentGuards] Request quota reached — {exc.user_message}",
         )
     except Exception as exc:
         if _fail_open():

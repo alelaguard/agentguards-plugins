@@ -222,7 +222,7 @@ def _post(path: str, payload: dict, *, timeout: int = 10) -> dict:
             except Exception:
                 body = {}
             if body.get("error") == "QUOTA_EXCEEDED":
-                raise QuotaExceededError(body.get("message") or "Monthly request quota reached.")
+                raise QuotaExceededError(body.get("message") or "Request quota reached.")
         if exc.code == 403:
             try:
                 body = json.loads(exc.read())
@@ -549,7 +549,7 @@ def _scan_web_output(content: str) -> None:
             {"text": content, "use_case": "web_fetch", "channel": "codex_hook"},
         )
     except QuotaExceededError as exc:
-        _block_output(f"AgentGuards monthly quota reached: {exc.user_message} Fetched web content withheld.")
+        _block_output(f"AgentGuards request quota reached: {exc.user_message} Fetched web content withheld.")
     except Exception as exc:
         if _fail_open():
             print(f"AgentGuards: service unreachable ({exc}), allowing web content (AGENTGUARDS_FAIL_OPEN=true)", file=sys.stderr)
@@ -662,7 +662,7 @@ def handle_user_prompt(event: dict) -> None:
     try:
         result = _post("/v1/guardrails/evaluate-input", {"text": prompt, "use_case": "check"})
     except QuotaExceededError as exc:
-        _block_prompt(f"[AgentGuards] Monthly quota reached: {exc.user_message}")
+        _block_prompt(f"[AgentGuards] Request quota reached: {exc.user_message}")
     except Exception as exc:
         if _fail_open():
             print(f"AgentGuards: service unreachable ({exc}), allowing prompt (AGENTGUARDS_FAIL_OPEN=true)", file=sys.stderr)
@@ -698,7 +698,7 @@ def handle_pre_tool_use(event: dict) -> None:
             },
         )
     except QuotaExceededError as exc:
-        _deny(f"AgentGuards monthly quota reached: {exc.user_message}")
+        _deny(f"AgentGuards request quota reached: {exc.user_message}")
     except Exception as exc:
         if _fail_open():
             print(f"AgentGuards: service unreachable ({exc}), allowing tool call (AGENTGUARDS_FAIL_OPEN=true)", file=sys.stderr)
@@ -812,7 +812,7 @@ def _scan_code(tool_input: dict) -> None:
     except ForbiddenError:
         return
     except QuotaExceededError as exc:
-        _block_output(f"AgentGuards monthly quota reached: {exc.user_message} Write withheld.")
+        _block_output(f"AgentGuards request quota reached: {exc.user_message} Write withheld.")
     except Exception as exc:
         if _fail_open():
             print(
