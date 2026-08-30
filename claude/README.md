@@ -50,9 +50,18 @@ The plugin's **Configure** screen also accepts a key, but it is only a fallback
 for the hooks — the bundled MCP server reads the environment variable. Prefer
 one of the two options above so both halves authenticate.
 
-**Claude Desktop's Chat and Cowork tabs are not supported.** They sync from
-your claude.ai account rather than `~/.claude`, so there is no environment for
-the key to come from, and hooks do not run in Chat. Use the **Code** tab.
+**The plain Chat tab is not supported** — hooks do not run there. Use the
+**Code** tab.
+
+**Cloud sessions (Cowork) are supported, with a one-time setup.** A cloud
+sandbox never reads your `~/.claude`, so the key cannot come from your machine,
+and its network is allowlisted by default. On the environment at claude.ai/code
+you need to set **Network access** to Custom and add `prod.agentguards.co`, add
+`AGENTGUARDS_API_KEY` under **Environment variables**, and enable the plugin
+from your repo's `.claude/settings.json`. Note that the environment-variables
+field is plaintext and readable by anyone using that environment, so prefer a
+separate key. Full walkthrough:
+[Claude Code in Cowork](https://agentguards.co/docs/claude-code-cowork).
 
 **Alternative: `npm install @agentguardsco/claude-plugin`.** Fetches these same
 files for programmatic use (pinned versions, CI, custom tooling) — it does
