@@ -96,8 +96,30 @@ for _stream in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
+
+def _installer_key() -> str:
+    """The key saved by the AgentGuards installer (``agentguards login``).
+
+    Checked last — an explicit env var or plugin setting always wins. The
+    installer can't set environment variables for apps that are already
+    running or launched from a GUI, so it leaves the key here instead. JSON so
+    it can grow later without a format change.
+    """
+    try:
+        path = os.path.join(os.path.expanduser("~"), ".agentguards", "credentials.json")
+        with open(path, encoding="utf-8") as f:
+            key = str(json.load(f).get("api_key", "")).strip()
+    except (OSError, ValueError, AttributeError):
+        return ""
+    return key if key.startswith("ag_") else ""
+
+
 AGENTGUARDS_URL = (os.getenv("AGENTGUARDS_URL") or "https://prod.agentguards.co").rstrip("/")
-AGENTGUARDS_API_KEY = os.getenv("AGENTGUARDS_API_KEY") or os.getenv("CLAUDE_PLUGIN_OPTION_AGENTGUARDS_API_KEY", "")
+AGENTGUARDS_API_KEY = (
+    os.getenv("AGENTGUARDS_API_KEY")
+    or os.getenv("CLAUDE_PLUGIN_OPTION_AGENTGUARDS_API_KEY")
+    or _installer_key()
+)
 
 # Per-session approval cache: binaries the user has ALREADY been asked about and
 # approved, so we don't re-ask for them later in the same session.

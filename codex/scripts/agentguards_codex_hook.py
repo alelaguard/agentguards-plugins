@@ -68,14 +68,33 @@ _SESSION_TTL = 7 * 24 * 3600
 _APPROVALS_VERSION = 2
 
 
+def _installer_key() -> str:
+    """The key saved by the AgentGuards installer (``agentguards login``).
+
+    Checked last — an explicit env var or plugin setting always wins. The
+    installer can't set environment variables for apps that are already
+    running or launched from a GUI, so it leaves the key here instead. JSON so
+    it can grow later without a format change.
+    """
+    try:
+        path = os.path.join(os.path.expanduser("~"), ".agentguards", "credentials.json")
+        with open(path, encoding="utf-8") as f:
+            key = str(json.load(f).get("api_key", "")).strip()
+    except (OSError, ValueError, AttributeError):
+        return ""
+    return key if key.startswith("ag_") else ""
+
+
 def _api_key() -> str:
     key = os.getenv("AGENTGUARDS_API_KEY", "").strip()
     if key:
         return key
     token_file = Path.home() / ".codex" / "agentguards_token"
     if token_file.exists():
-        return token_file.read_text().strip()
-    return ""
+        token = token_file.read_text().strip()
+        if token:  # an empty/blanked token file must not hide the installer's key
+            return token
+    return _installer_key()
 
 
 def _fail_open() -> bool:
