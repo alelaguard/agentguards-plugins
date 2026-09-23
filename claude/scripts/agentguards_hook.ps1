@@ -47,6 +47,17 @@ $AgentGuardsUrl = $AgentGuardsUrl.TrimEnd('/')
 
 $ApiKey = $env:AGENTGUARDS_API_KEY
 if ([string]::IsNullOrWhiteSpace($ApiKey)) { $ApiKey = $env:CLAUDE_PLUGIN_OPTION_AGENTGUARDS_API_KEY }
+# Last resort: the key the AgentGuards installer saved. It can't set environment
+# variables for apps already running or launched from the Start menu.
+if ([string]::IsNullOrWhiteSpace($ApiKey)) {
+    try {
+        $credPath = Join-Path (Join-Path $HOME '.agentguards') 'credentials.json'
+        if (Test-Path -LiteralPath $credPath) {
+            $saved = [string](Get-Content -LiteralPath $credPath -Raw | ConvertFrom-Json).api_key
+            if ($saved -and $saved.Trim().StartsWith('ag_')) { $ApiKey = $saved.Trim() }
+        }
+    } catch { }
+}
 if ($null -eq $ApiKey) { $ApiKey = '' }
 
 # USERPROFILE on Windows; HOME when this runs anywhere else (PowerShell 7 on
