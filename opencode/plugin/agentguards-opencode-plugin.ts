@@ -244,7 +244,11 @@ async function post(path: string, payload: Record<string, unknown>, timeoutMs = 
   try {
     const res = await fetch(`${AGENTGUARDS_URL}${path}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "X-API-Key": AGENTGUARDS_API_KEY },
+      headers: {
+        "Content-Type": "application/json",
+        "X-API-Key": AGENTGUARDS_API_KEY,
+        "X-AgentGuards-Client": "opencode/ts",
+      },
       body: JSON.stringify(payload),
       signal: controller.signal,
     })

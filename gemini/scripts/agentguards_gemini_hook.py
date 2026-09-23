@@ -202,6 +202,7 @@ def _post(path: str, payload: dict, *, timeout: int = 10) -> dict:
         headers={
             "Content-Type": "application/json",
             "X-API-Key": AGENTGUARDS_API_KEY,
+            "X-AgentGuards-Client": "gemini-cli/py",
         },
         method="POST",
     )
