@@ -10,11 +10,11 @@ fail-open (availability-first) with a single environment variable.
 
 | Plugin | Agent | Deployment | Version | Description |
 |---|---|---|---|---|
-| [`agentguards-claude`](./claude) | Claude Code | hosted | `0.2.30` | MCP server + enforcing hooks (input, Bash, web-content) and security instructions. |
-| [`agentguards-codex`](./codex) | OpenAI Codex | hosted | `0.2.13` | Enforcing hooks (input, shell, web-content) + MCP server and security instructions. |
-| [`agentguards-gemini`](./gemini) | Gemini CLI | hosted | `0.1.8` | MCP server + enforcing hooks (input, tool-call, web-content) and security instructions. |
-| [`agentguards-copilot`](./copilot) | GitHub Copilot CLI | hosted | `0.1.6` | MCP server + enforcing hooks (input, shell, web-content) and security instructions. |
-| [`@agentguardsco/opencode-plugin`](./opencode) | OpenCode | hosted | `0.1.6` | Enforcing plugin (prompt, `bash`, web-content), + MCP server and security instructions. |
+| [`agentguards-claude`](./claude) | Claude Code | hosted | `0.2.31` | MCP server + enforcing hooks (input, Bash, web-content) and security instructions. |
+| [`agentguards-codex`](./codex) | OpenAI Codex | hosted | `0.2.14` | Enforcing hooks (input, shell, web-content) + MCP server and security instructions. |
+| [`agentguards-gemini`](./gemini) | Gemini CLI | hosted | `0.1.9` | MCP server + enforcing hooks (input, tool-call, web-content) and security instructions. |
+| [`agentguards-copilot`](./copilot) | GitHub Copilot CLI | hosted | `0.1.7` | MCP server + enforcing hooks (input, shell, web-content) and security instructions. |
+| [`@agentguardsco/opencode-plugin`](./opencode) | OpenCode | hosted | `0.1.7` | Enforcing plugin (prompt, `bash`, web-content), + MCP server and security instructions. |
 | [`agentguards-claude-selfhosted`](./claude-selfhosted) | Claude Code | self-hosted | `0.1.11` | Hooks only — no bundled MCP server, and no default URL, so it can never talk to the hosted service by accident. |
 | [`agentguards-codex-selfhosted`](./codex-selfhosted) | OpenAI Codex | self-hosted | `0.1.6` | Hooks only — no bundled MCP server, and no default URL. |
 | [`agentguards-gemini-selfhosted`](./gemini-selfhosted) | Gemini CLI | self-hosted | `0.1.5` | Hooks only — no bundled MCP server, and no default URL. |
