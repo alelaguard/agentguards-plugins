@@ -201,7 +201,11 @@ def _post(path: str, payload: dict, *, timeout: int = 10) -> dict:
     req = urllib.request.Request(
         f"{AGENTGUARDS_URL}{path}",
         data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json", "X-API-Key": _api_key()},
+        headers={
+            "Content-Type": "application/json",
+            "X-API-Key": _api_key(),
+            "X-AgentGuards-Client": "codex/py",
+        },
         method="POST",
     )
     try:

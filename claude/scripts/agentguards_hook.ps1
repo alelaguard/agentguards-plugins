@@ -184,6 +184,7 @@ function Invoke-AgentGuards([string]$Path, $Payload, [int]$TimeoutSec = 10) {
         $request.ContentType = 'application/json; charset=utf-8'
         $request.Accept = 'application/json'
         $request.Headers.Add('X-API-Key', $ApiKey)
+        $request.Headers.Add('X-AgentGuards-Client', 'claude-code/ps1')
         $request.Timeout = $TimeoutSec * 1000
         $request.ReadWriteTimeout = $TimeoutSec * 1000
 
