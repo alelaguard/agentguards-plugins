@@ -1,0 +1,50 @@
+name: Release the agentguards CLI
+
+# Push a tag like `cli-v0.1.0` to publish binaries for every supported platform,
+# plus SHA256SUMS and the install scripts, as a GitHub Release. install.sh and
+# install.ps1 download from the latest release and refuse a binary whose
+# checksum doesn't match SHA256SUMS.
+on:
+  push:
+    tags: ["cli-v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: cli/go.mod
+      - name: Test
+        working-directory: cli
+        run: go vet ./... && go test ./...
+      - name: Build
+        working-directory: cli
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#cli-v}"
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
+            os="${target%/*}"; arch="${target#*/}"
+            out="dist/agentguards_${os}_${arch}"
+            [ "$os" = windows ] && out="$out.exe"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
+              go build -trimpath -ldflags "-s -w -X main.version=${version}" -o "$out" .
+          done
+          cp install.sh install.ps1 dist/
+          (cd dist && sha256sum agentguards_* install.sh install.ps1 > SHA256SUMS)
+          cat dist/SHA256SUMS
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" cli/dist/* \
+            --title "agentguards CLI ${TAG#cli-v}" \
+            --notes "Install: \`curl -fsSL https://agentguards.co/install.sh | sh\` (macOS/Linux) or \`irm https://agentguards.co/install.ps1 | iex\` (Windows). Checksums in SHA256SUMS."

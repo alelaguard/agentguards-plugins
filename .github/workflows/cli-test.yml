@@ -1,0 +1,99 @@
+name: CLI tests
+
+# The installer runs on all three desktop OSes, and file permissions, paths and
+# home-directory lookup differ on each — so test on each.
+on:
+  pull_request:
+    paths: ["cli/**", ".github/workflows/cli-*.yml"]
+  push:
+    branches: [main]
+    paths: ["cli/**", ".github/workflows/cli-*.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: cli/go.mod
+      - name: Vet and test
+        working-directory: cli
+        run: go vet ./... && go test ./...
+      - name: install.sh is valid POSIX sh
+        if: runner.os != 'Windows'
+        run: sh -n cli/install.sh
+
+  # The bootstrap scripts end to end on each OS, against a locally built binary
+  # served over HTTP: download, checksum check, install location, hand-off to the
+  # binary. `--agents nope` stops before any agent is touched, and a tampered
+  # binary must be refused.
+  bootstrap:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: cli/go.mod
+      - name: Build and serve
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p serve
+          os=$(go env GOOS); arch=$(go env GOARCH)
+          name="agentguards_${os}_${arch}"; [ "$os" = windows ] && name="$name.exe"
+          (cd cli && CGO_ENABLED=0 go build -ldflags "-X main.version=0.0.0-ci" -o "../serve/$name" .)
+          (cd serve && python3 -c "import hashlib,os;[print(hashlib.sha256(open(f,'rb').read()).hexdigest()+'  '+f) for f in os.listdir('.') if f.startswith('agentguards_')]" > SHA256SUMS)
+          cat serve/SHA256SUMS
+          (cd serve && python3 -m http.server 8765 >/dev/null 2>&1 &)
+          sleep 2
+      - name: install.sh installs and hands off
+        if: runner.os != 'Windows'
+        run: |
+          set -u
+          out=$(AGENTGUARDS_DOWNLOAD_BASE=http://127.0.0.1:8765 sh cli/install.sh --agents nope </dev/null 2>&1 || true)
+          echo "$out"
+          test -x "$HOME/.agentguards/bin/agentguards"
+          "$HOME/.agentguards/bin/agentguards" version | grep -q 0.0.0-ci
+          echo "$out" | grep -q 'unknown agent "nope"'
+      - name: install.sh refuses a tampered binary
+        if: runner.os != 'Windows'
+        run: |
+          f=$(ls serve/agentguards_*); echo junk >> "$f"
+          if AGENTGUARDS_DOWNLOAD_BASE=http://127.0.0.1:8765 sh cli/install.sh </dev/null; then
+            echo "tampered binary was accepted"; exit 1
+          fi
+      - name: install.ps1 installs and hands off
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:AGENTGUARDS_DOWNLOAD_BASE = 'http://127.0.0.1:8765'
+          $env:AGENTGUARDS_INSTALL_ARGS = '--agents nope'
+          & ([scriptblock]::Create((Get-Content -Raw cli/install.ps1))) *>&1 | Tee-Object -Variable log | Out-Host
+          $exe = Join-Path $HOME '.agentguards\bin\agentguards.exe'
+          if (-not (Test-Path $exe)) { throw "not installed at $exe" }
+          if (-not ((& $exe version) -match '0.0.0-ci')) { throw 'wrong binary' }
+          if (-not (($log | Out-String) -match 'unknown agent')) { throw 'did not hand off to the binary' }
+          $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+          if (-not (($userPath -split ';') -contains (Split-Path $exe))) { throw 'bin dir not added to user PATH' }
+      - name: install.ps1 refuses a tampered binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $f = Get-ChildItem serve/agentguards_* | Select-Object -First 1
+          Add-Content -Path $f.FullName -Value 'junk'
+          $env:AGENTGUARDS_DOWNLOAD_BASE = 'http://127.0.0.1:8765'
+          $failed = $false
+          try { & ([scriptblock]::Create((Get-Content -Raw cli/install.ps1))) } catch { $failed = $true; Write-Host "refused: $_" }
+          if (-not $failed) { throw 'tampered binary was accepted' }
