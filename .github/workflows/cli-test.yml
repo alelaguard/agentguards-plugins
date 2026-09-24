@@ -196,7 +196,22 @@ jobs:
           # Portable (GNU `stat -f` means file-system status, BSD's means format).
           test "$(python -c "import os;print(oct(os.stat(os.path.expanduser('~/.agentguards/credentials.json')).st_mode & 0o777))")" = 0o600
       - name: doctor
-        run: ~/.agentguards/bin/agentguards doctor
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if out=$(~/.agentguards/bin/agentguards doctor 2>&1); then echo "$out"; exit 0; fi
+          echo "$out"
+          # Codex always installs its plugin from GitHub main, so a PR that bumps the Codex
+          # plugin (and codexMinVersion with it) sees main's older plugin until it merges.
+          # Tolerate exactly that one problem, on PRs only; anything else still fails.
+          want=$(python -c "import json;print(json.load(open('codex/.codex-plugin/plugin.json'))['version'])")
+          problems=$(echo "$out" | grep '^✗' | grep -v 'problem(s) found' || true)
+          if [ "$EVENT" = pull_request ] && [ "$(echo "$problems" | wc -l)" -eq 1 ] \
+             && echo "$problems" | grep -q "Codex plugin .* is older than $want "; then
+            echo "::notice::Codex plugin on main is older than this PR's $want; expected until merge"
+            exit 0
+          fi
+          exit 1
       - name: Installed hooks screen with only the saved key
         run: python tests/installer_e2e/check_hooks.py "$AGENTGUARDS_URL"
       - name: Re-running install is safe, uninstall removes everything
