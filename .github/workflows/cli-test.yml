@@ -6,10 +6,10 @@ on:
   # The parity job compares the Go hooks with the Python ones, so a change to
   # EITHER side (or the launchers) must run it — not just changes under cli/.
   pull_request:
-    paths: ["cli/**", "codex/**", "tests/test_codex_go_parity.py", ".github/workflows/cli-*.yml"]
+    paths: ["cli/**", "codex/**", "claude/**", "tests/test_codex_go_parity.py", "tests/installer_e2e/**", ".github/workflows/cli-*.yml"]
   push:
     branches: [main]
-    paths: ["cli/**", "codex/**", "tests/test_codex_go_parity.py", ".github/workflows/cli-*.yml"]
+    paths: ["cli/**", "codex/**", "claude/**", "tests/test_codex_go_parity.py", "tests/installer_e2e/**", ".github/workflows/cli-*.yml"]
 
 permissions:
   contents: read
@@ -140,3 +140,64 @@ jobs:
           $failed = $false
           try { & ([scriptblock]::Create((Get-Content -Raw cli/install.ps1))) } catch { $failed = $true; Write-Host "refused: $_" }
           if (-not $failed) { throw 'tampered binary was accepted' }
+
+  # The whole installer, end to end, on a real Mac (and Linux): the real
+  # install.sh -> binary -> Claude Code + Codex plugins -> the INSTALLED hooks,
+  # against a local mock API (no secrets). The mock records which client sent
+  # each request, proving Codex's hooks ran inside agentguards ("codex/go").
+  installer-e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      AGENTGUARDS_URL: http://127.0.0.1:8799
+      AGENTGUARDS_DOWNLOAD_BASE: http://127.0.0.1:8765
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: cli/go.mod
+      - uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a # v4.2.0
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Install the agents
+        run: npm install -g --silent @anthropic-ai/claude-code @openai/codex
+      - name: Build the CLI, serve it with SHA256SUMS, start the mock API
+        run: |
+          set -euo pipefail
+          mkdir -p serve
+          name="agentguards_$(go env GOOS)_$(go env GOARCH)"
+          (cd cli && CGO_ENABLED=0 go build -ldflags "-X main.version=0.0.0-ci" -o "../serve/$name" .)
+          (cd serve && python -c "import hashlib,os;[print(hashlib.sha256(open(f,'rb').read()).hexdigest()+'  '+f) for f in os.listdir('.') if f.startswith('agentguards_')]" > SHA256SUMS)
+          (cd serve && python -m http.server 8765 >/dev/null 2>&1 &)
+          (python tests/installer_e2e/mock_api.py 8799 >/dev/null 2>&1 &)
+          sleep 2
+      - name: install.sh (the real bootstrap) sets up Claude Code and Codex
+        run: |
+          set -euo pipefail
+          KEY="ag_$(printf '7%.0s' $(seq 32))"   # fake; the mock accepts any ag_ key
+          # Claude's plugin from this checkout, so plugin changes in the PR are tested.
+          # (Codex always installs its plugin from GitHub main: git-subdir ref main.)
+          AGENTGUARDS_PLUGIN_SOURCE="$GITHUB_WORKSPACE" sh cli/install.sh --yes --key "$KEY" </dev/null | tee install.log
+          grep -q 'Setting up Claude Code... ✓' install.log
+          grep -q 'Setting up Codex... ✓' install.log
+          # Portable (GNU `stat -f` means file-system status, BSD's means format).
+          test "$(python -c "import os;print(oct(os.stat(os.path.expanduser('~/.agentguards/credentials.json')).st_mode & 0o777))")" = 0o600
+      - name: doctor
+        run: ~/.agentguards/bin/agentguards doctor
+      - name: Installed hooks screen with only the saved key (Codex via the Go binary)
+        run: python tests/installer_e2e/check_hooks.py "$AGENTGUARDS_URL"
+      - name: Re-running install is safe, uninstall removes everything
+        run: |
+          set -euo pipefail
+          KEY="ag_$(printf '7%.0s' $(seq 32))"
+          ~/.agentguards/bin/agentguards install --yes --key "$KEY" </dev/null
+          test "$(claude plugin list --json | python -c "import sys,json;print(sum(1 for p in json.load(sys.stdin) if p['id'].startswith('agentguards-claude')))")" = 1
+          ~/.agentguards/bin/agentguards uninstall --yes </dev/null
+          test ! -f "$HOME/.agentguards/credentials.json"
+          if ~/.agentguards/bin/agentguards doctor | grep -q 'AgentGuards installed'; then echo "still installed after uninstall"; exit 1; fi
