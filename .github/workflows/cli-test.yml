@@ -3,11 +3,13 @@ name: CLI tests
 # The installer runs on all three desktop OSes, and file permissions, paths and
 # home-directory lookup differ on each — so test on each.
 on:
+  # The parity job compares the Go hooks with the Python ones, so a change to
+  # EITHER side (or the launchers) must run it — not just changes under cli/.
   pull_request:
-    paths: ["cli/**", ".github/workflows/cli-*.yml"]
+    paths: ["cli/**", "codex/**", "tests/test_codex_go_parity.py", ".github/workflows/cli-*.yml"]
   push:
     branches: [main]
-    paths: ["cli/**", ".github/workflows/cli-*.yml"]
+    paths: ["cli/**", "codex/**", "tests/test_codex_go_parity.py", ".github/workflows/cli-*.yml"]
 
 permissions:
   contents: read
@@ -48,7 +50,9 @@ jobs:
           # 1. No agentguards.exe: fail-closed with install instructions.
           $out = $event | cmd.exe /C "`"$cmdLine`""
           Write-Host "without binary: $out"
-          if ($out -notmatch '"decision":"block"' -or $out -notmatch 'install.ps1') { throw 'launcher without the binary must block with install instructions' }
+          if ($out -notmatch '"decision":"block"' -or $out -notmatch 'install\.ps1 \| iex') { throw 'launcher without the binary must block with pasteable install instructions' }
+          if ($out -match '\^') { throw 'block message contains a stray caret (not pasteable into PowerShell)' }
+          $null = $out | ConvertFrom-Json
           # 2. With the binary: the launcher hands the event to it (no key -> its own not-configured block).
           $bin = Join-Path $HOME '.agentguards\bin'
           New-Item -ItemType Directory -Force -Path $bin | Out-Null

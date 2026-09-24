@@ -8,6 +8,10 @@
 # exit code unchanged.
 event="${1:-}"
 here="$(cd "$(dirname "$0")" && pwd)"
+# Unset OR empty -> prod, exactly what the pre-0.2.16 hook command did. (Python's
+# os.getenv(name, default) returns "" for an empty variable, which breaks every call.)
+: "${AGENTGUARDS_URL:=https://prod.agentguards.co}"
+export AGENTGUARDS_URL
 
 # `hook --supports codex` guards against an installed binary too old to run hooks
 # (CLI 0.1.0 had none): that one is skipped and Python is used instead.

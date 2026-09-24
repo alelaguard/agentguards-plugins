@@ -308,7 +308,7 @@ func TestCodexRefreshFailureDoesNotFailAnExistingInstall(t *testing.T) {
 		case "codex plugin marketplace upgrade agentguards-codex":
 			return "", io.ErrUnexpectedEOF // e.g. not a git marketplace
 		case "codex plugin list":
-			return "agentguards-codex@agentguards-codex  installed, enabled  0.2.15\n", nil
+			return "agentguards-codex@agentguards-codex  installed, enabled  0.2.16\n", nil
 		}
 		t.Fatalf("unexpected command %q", cmd)
 		return "", nil
@@ -522,5 +522,46 @@ func TestHookSupportsProbe(t *testing.T) {
 	}
 	if code := cmdHook([]string{"--supports", "claude"}, strings.NewReader(""), &out, &errOut); code == 0 {
 		t.Fatal("claude isn't ported yet: its launcher must fall back to its scripts")
+	}
+}
+
+func TestVersionLess(t *testing.T) {
+	for _, c := range []struct {
+		a, b string
+		want bool
+	}{{"0.2.9", "0.2.16", true}, {"0.2.15", "0.2.16", true}, {"0.2.16", "0.2.16", false}, {"0.3.0", "0.2.16", false}, {"1.0.0", "0.9.9", false}} {
+		if got := versionLess(c.a, c.b); got != c.want {
+			t.Errorf("versionLess(%s, %s) = %v", c.a, c.b, got)
+		}
+	}
+}
+
+func TestOldCodexPluginIsUpgradedOnReinstall(t *testing.T) {
+	f := &fakeRunner{replies: map[string]string{
+		"codex plugin marketplace list": "agentguards-codex /x\n",
+		"codex plugin list":             "agentguards-codex@agentguards-codex  installed, enabled  0.2.15  https://github.com/...\n",
+	}}
+	f.install(t)
+	if err := codexAgent().Install(); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(f.calls, "\n")
+	if !strings.Contains(joined, "codex plugin remove agentguards-codex@agentguards-codex") ||
+		!strings.Contains(joined, "codex plugin add agentguards-codex@agentguards-codex") {
+		t.Fatalf("a pre-0.2.16 Codex plugin must be replaced:\n%s", joined)
+	}
+}
+
+func TestCurrentCodexPluginIsLeftAlone(t *testing.T) {
+	f := &fakeRunner{replies: map[string]string{
+		"codex plugin marketplace list": "agentguards-codex /x\n",
+		"codex plugin list":             "agentguards-codex@agentguards-codex  installed, enabled  0.2.16\n",
+	}}
+	f.install(t)
+	codexAgent().Install()
+	for _, c := range f.calls {
+		if strings.Contains(c, "plugin remove") || strings.Contains(c, "plugin add") {
+			t.Fatalf("up-to-date plugin must not be reinstalled (it would re-prompt for hook trust): %q", c)
+		}
 	}
 }

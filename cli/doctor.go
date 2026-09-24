@@ -98,6 +98,18 @@ func cmdDoctor(args []string, out io.Writer) error {
 		bad("no supported coding agent found")
 	}
 	for _, a := range agents {
+		if a.ID != "codex" {
+			continue
+		}
+		// Codex's hooks run this binary, found in ~/.agentguards/bin or on PATH.
+		if !binaryFindableByHooks() {
+			bad("Codex's hooks look for agentguards in ~/.agentguards/bin or on PATH, and this copy is in neither — reinstall with the default location")
+		}
+		if v := codexPluginVersion(); v != "" && versionLess(v, codexMinVersion) {
+			bad("Codex plugin %s is older than %s (its hooks still need python3, and don't run on Windows) — run `agentguards install` to upgrade it", v, codexMinVersion)
+		}
+	}
+	for _, a := range agents {
 		st, err := a.State()
 		switch {
 		case err != nil:
@@ -146,4 +158,22 @@ func claudeRuntimeName() string {
 		return "PowerShell"
 	}
 	return "python3"
+}
+
+// binaryFindableByHooks: the Codex launchers look in ~/.agentguards/bin first, then PATH.
+func binaryFindableByHooks() bool {
+	if _, err := lookPath("agentguards"); err == nil {
+		return true
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return false
+	}
+	dir, err := configDir()
+	if err != nil {
+		return false
+	}
+	exe, _ = filepath.EvalSymlinks(exe)
+	want, _ := filepath.EvalSymlinks(filepath.Join(dir, "bin"))
+	return filepath.Dir(exe) == want
 }

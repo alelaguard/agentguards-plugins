@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -180,6 +182,45 @@ func hasClaudeMarketplace() (bool, error) {
 
 // --- Codex --------------------------------------------------------------------
 
+// codexMinVersion is the first Codex plugin whose hooks run inside agentguards
+// (and so work on Windows and without Python). Older installs are upgraded.
+const codexMinVersion = "0.2.16"
+
+var semverRe = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
+
+// codexPluginVersion reads the installed version from `codex plugin list`, "" if unknown.
+func codexPluginVersion() string {
+	out, err := run("codex", "plugin", "list")
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) == 0 || f[0] != "agentguards-codex@agentguards-codex" {
+			continue
+		}
+		for _, x := range f[1:] {
+			if semverRe.MatchString(x) {
+				return x
+			}
+		}
+	}
+	return ""
+}
+
+// versionLess compares dotted numeric versions ("0.2.9" < "0.2.16").
+func versionLess(a, b string) bool {
+	pa, pb := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(pa) && i < len(pb); i++ {
+		x, _ := strconv.Atoi(pa[i])
+		y, _ := strconv.Atoi(pb[i])
+		if x != y {
+			return x < y
+		}
+	}
+	return len(pa) < len(pb)
+}
+
 func codexAgent() *Agent {
 	const plugin = "agentguards-codex@agentguards-codex"
 	// `codex plugin list` prints e.g. "agentguards-codex@agentguards-codex  installed, enabled  0.2.15".
@@ -228,6 +269,16 @@ func codexAgent() *Agent {
 			}
 			switch st {
 			case installedEnabled:
+				// Codex has no plugin update command: an install older than the first
+				// binary-backed version is replaced (Codex may then ask to re-trust
+				// the hooks once — that's its own safety check).
+				if v := codexPluginVersion(); v != "" && versionLess(v, codexMinVersion) {
+					if _, err := run("codex", "plugin", "remove", plugin); err != nil {
+						return err
+					}
+					_, err := run("codex", "plugin", "add", plugin)
+					return err
+				}
 				return nil
 			case installedDisabled:
 				// Codex has no CLI command to re-enable a plugin.

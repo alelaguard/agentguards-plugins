@@ -80,7 +80,10 @@ def api():
 
 # --- running both runtimes ----------------------------------------------------------------
 
-_ERR_IN_PARENS = re.compile(r"(unreachable) \((.*?)\)(?=[ ;,.)]| —|$)", re.S)
+# The transport error sits between "unreachable (" and the fixed text that follows it
+# in each message. Anchoring on that text (not the first ")") matters: Python's SSL
+# errors contain their own parentheses, e.g. "... (_ssl.c:4148)".
+_ERR_IN_PARENS = re.compile(r"(unreachable) \((.*?)\)(?=; the hook| and the hook| — |, allowing)", re.S)
 
 
 def _mask(text: str) -> str:
@@ -416,3 +419,59 @@ def test_command_parsing_matches(tmp_path):
                           cwd=ROOT / "cli", env={**os.environ, "AGENTGUARDS_PARSE_CASES": str(cases)},
                           capture_output=True, text=True)
     assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+# Review findings, pinned ----------------------------------------------------------------
+
+@pytest.mark.parametrize("event_type,route", [
+    ("PreToolUse", (200, {"decision": "require-approval", "reason": "r"})),
+    ("PermissionRequest", (200, {"decision": "require-approval", "reason": "r"})),
+])
+def test_list_form_command(go_bin, api, tmp_path, event_type, route):
+    """An argv-list command is screened the same way by both (Python used to crash)."""
+    api.routes["/v1/actions/authorize"] = route
+    ev = {"tool_name": "shell", "tool_input": {"command": ["sudo", "curl", "https://x"]}, "session_id": "s1"}
+    both(go_bin, api, tmp_path, event_type, ev)
+
+
+def test_list_form_fetch_is_scanned(go_bin, api, tmp_path):
+    api.routes["/v1/guardrails/evaluate-input"] = (200, {"decision": "block", "message": "bad page"})
+    ev = {"tool_name": "shell", "tool_input": {"command": ["curl", "https://x"]}, "tool_response": "page", "session_id": "s1"}
+    r = both(go_bin, api, tmp_path, "PostToolUse", ev)
+    assert r["verdict"]["decision"] == "block"
+
+
+@pytest.mark.parametrize("passed", [None, 0, ""], ids=["null", "zero", "empty"])
+def test_falsy_passed_counts_as_failing(go_bin, api, tmp_path, passed):
+    """A non-PII check with passed=null must block, not ride along with a PII redaction."""
+    route = (200, {"decision": "redact", "redacted_text": "clean", "checks": [PII, {"check_name": "jailbreak", "passed": passed}]})
+    api.routes["/v1/guardrails/evaluate-input"] = route
+    r = both(go_bin, api, tmp_path, "PostToolUse", post("curl https://x"))
+    assert "redacted" not in r["verdict"]["reason"]
+
+
+def test_unicode_command_truncation(go_bin, api, tmp_path):
+    api.routes["/v1/actions/authorize"] = (200, {"decision": "deny", "reason": "x"})
+    both(go_bin, api, tmp_path, "PreToolUse", pre("echo " + "日本語" * 150))
+
+
+def test_short_installer_key_counts_as_configured(go_bin, api, tmp_path):
+    for name in ("py", "go"):
+        d = tmp_path / name / ".agentguards"
+        d.mkdir(parents=True)
+        (d / "credentials.json").write_text(json.dumps({"api_key": "ag_short"}))
+    env = {k: v for k, v in os.environ.items() if not k.startswith("AGENTGUARDS_")}
+    outs = {}
+    for name, cmd in (("py", [sys.executable, str(PY_HOOK)]), ("go", [str(go_bin), "hook", "codex"])):
+        home = tmp_path / name
+        proc = subprocess.run(cmd + ["UserPromptSubmit"], input=json.dumps(PROMPT), capture_output=True, text=True,
+                              env={**env, "HOME": str(home), "USERPROFILE": str(home), "AGENTGUARDS_URL": api.url})
+        outs[name] = proc.stdout.strip()
+    assert outs["py"] == outs["go"] == ""
+    assert len(api.requests) == 2  # both sent it rather than calling themselves unconfigured
+
+
+def test_ca_bundle_without_certificates(go_bin, api, tmp_path):
+    bundle = tmp_path / "empty.pem"
+    bundle.write_text("not a certificate\n")
+    both(go_bin, api, tmp_path, "UserPromptSubmit", PROMPT, env={"AGENTGUARDS_CA_BUNDLE": str(bundle)})

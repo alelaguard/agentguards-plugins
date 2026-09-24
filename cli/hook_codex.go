@@ -111,7 +111,9 @@ func failingChecks(result map[string]any) []map[string]any {
 	checks, _ := result["checks"].([]any)
 	for _, c := range checks {
 		m := obj(c)
-		if passed, ok := m["passed"].(bool); ok && !passed {
+		// Python: `not c.get("passed", True)` — absent counts as passing; false, null,
+		// 0 and "" all count as FAILING. A null must not hide a non-PII failure.
+		if v, present := m["passed"]; present && !pyTruthy(v) {
 			out = append(out, m)
 		}
 	}
@@ -293,10 +295,11 @@ func (h hookIO) codexUserPrompt(event map[string]any) error {
 const defaultCommandBlockedPanel = "🛡️ [AgentGuards] Command blocked\nDecision: deny\nReason: policy - flagged by AgentGuards guardrails\nSeverity: high"
 
 func shownCommand(command string) string {
-	if len(command) <= 500 {
+	r := []rune(command) // characters, like Python's len()/slicing
+	if len(r) <= 500 {
 		return command
 	}
-	return command[:500] + "..."
+	return string(r[:500]) + "..."
 }
 
 func allApproved(binaries []string, approved map[string]bool) bool {
@@ -434,4 +437,23 @@ func runCodexHook(h hookIO, eventType string, raw []byte) error {
 		return h.codexPreToolUse(event)
 	}
 	return h.codexContinue()
+}
+
+// pyTruthy mirrors Python truthiness for decoded JSON values.
+func pyTruthy(v any) bool {
+	switch x := v.(type) {
+	case nil:
+		return false
+	case bool:
+		return x
+	case float64:
+		return x != 0
+	case string:
+		return x != ""
+	case []any:
+		return len(x) > 0
+	case map[string]any:
+		return len(x) > 0
+	}
+	return true
 }

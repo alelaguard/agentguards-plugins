@@ -16,12 +16,13 @@ rem Too old to run hooks (CLI 0.1.0 had none)? Treat it as missing.
 exit /b %ERRORLEVEL%
 :missing
 rem Fail-closed, like the Python hook when AgentGuards is not configured.
+rem The | below is inside a JSON string, i.e. inside quotes, where cmd.exe prints it literally.
 if /i "%~1"=="UserPromptSubmit" (
-  echo {"decision":"block","reason":"AgentGuards on Windows needs the AgentGuards CLI (0.2 or newer) to run its Codex hooks. Install or update it in PowerShell with: irm https://github.com/alelaguard/agentguards-plugins/releases/latest/download/install.ps1 ^| iex"}
+  echo {"decision":"block","reason":"AgentGuards on Windows needs the AgentGuards CLI (0.2 or newer) to run its Codex hooks. Install or update it in PowerShell with: irm https://github.com/alelaguard/agentguards-plugins/releases/latest/download/install.ps1 | iex"}
   exit /b 0
 )
 if /i "%~1"=="PreToolUse" (
-  echo {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"AgentGuards on Windows needs the AgentGuards CLI (0.2 or newer) to run its Codex hooks. Install or update it in PowerShell with: irm https://github.com/alelaguard/agentguards-plugins/releases/latest/download/install.ps1 ^| iex"}}
+  echo {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"AgentGuards on Windows needs the AgentGuards CLI (0.2 or newer) to run its Codex hooks. Install or update it in PowerShell with: irm https://github.com/alelaguard/agentguards-plugins/releases/latest/download/install.ps1 | iex"}}
   exit /b 0
 )
 exit /b 0

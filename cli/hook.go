@@ -66,7 +66,9 @@ func cmdHook(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 2
 	}
 	agent, event := args[0], args[1]
-	raw, _ := io.ReadAll(io.LimitReader(stdin, 32<<20))
+	// The whole event, however large: a truncated event fails to parse, and an
+	// unparseable event continues unscreened — a size cap would be a bypass.
+	raw, _ := io.ReadAll(stdin)
 	h := hookIO{out: stdout, errOut: stderr}
 	var err error
 	switch agent {
@@ -213,11 +215,14 @@ func unreachableRemedy(err error) string {
 				"Or unset AGENTGUARDS_CA_BUNDLE to go back to the public CA roots.", bundle, bundle)
 		}
 	}
-	var certErr *x509.UnknownAuthorityError
+	// Same test as the Python hooks' _is_tls_trust_error: a verification failure,
+	// not any error that happens to mention certificates.
+	var authErr x509.UnknownAuthorityError
 	var hostErr x509.HostnameError
 	var invalidErr x509.CertificateInvalidError
-	if errors.As(err, &certErr) || errors.As(err, &hostErr) || errors.As(err, &invalidErr) ||
-		strings.Contains(err.Error(), "certificate") {
+	var verifyErr *tls.CertificateVerificationError
+	if errors.As(err, &authErr) || errors.As(err, &hostErr) || errors.As(err, &invalidErr) ||
+		errors.As(err, &verifyErr) {
 		return "The server's certificate is not trusted. A self-hosted appliance signs " +
 			"its own certificate on first boot, so this is expected until you install " +
 			"a real one.\n" +
@@ -239,14 +244,27 @@ func unreachableRemedy(err error) string {
 	return "Set AGENTGUARDS_FAIL_OPEN=true to allow requests while the service is down."
 }
 
-// installerKey is ~/.agentguards/credentials.json's key, if valid (same rule as
-// the Python hooks' _installer_key).
+// installerKey is ~/.agentguards/credentials.json's key — the same rule as the
+// Python hooks' _installer_key: any value starting "ag_" (no length check, so the
+// two runtimes agree on what "configured" means).
 func installerKey() string {
-	c, err := loadCredentials()
+	p, err := credentialsPath()
 	if err != nil {
 		return ""
 	}
-	return c.APIKey
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return ""
+	}
+	var c map[string]any
+	if json.Unmarshal(b, &c) != nil {
+		return ""
+	}
+	key := strings.TrimSpace(fmt.Sprint(c["api_key"]))
+	if c["api_key"] == nil || !strings.HasPrefix(key, "ag_") {
+		return ""
+	}
+	return key
 }
 
 // --- command parsing (mirrors _segments / _resolve_binaries) ----------------------
