@@ -1,11 +1,12 @@
 ---
+name: setup
 description: Set up and verify AgentGuards in Claude Code. Use when the user runs /agentguards:setup, asks to configure AgentGuards, set their API key, or check that the guardrails are wired up correctly.
 ---
 
 # AgentGuards setup
 
-Set up AgentGuards for the user. The plugin already bundles the MCP server and the
-enforcing hooks — the only thing missing is their API key.
+Set up AgentGuards for the user. The plugin already bundles the enforcing hooks —
+the only thing missing is their API key.
 
 ## Never do these
 
@@ -108,21 +109,20 @@ If you catch yourself writing any of the above, stop and write the file instead.
      tray; on macOS the red dot only hides the window. Then reopen.
    - **Terminal:** start a new Claude Code session.
 
-5. **Verify after the restart.** Run the `health_check` MCP tool
-   (`ToolSearch(query="agentguards health_check")`; as a plugin its full name is
-   `mcp__plugin_agentguards-claude_agentguards__health_check`).
+5. **Verify after the restart.** Run the checks in the `status` skill yourself:
+   they prove the key is **accepted** (HTTP 200), not just present — a
+   placeholder key is present too.
 
-   `health_check` only proves the service is reachable — **it does not validate
-   the key**, so a placeholder still returns "ok". To prove the key works, call
-   `check_input` with something the guardrails block — asking to be shown all the
-   API keys works well — and confirm it comes back `block`. (Deliberately not
-   spelling out a prompt-injection payload here: plugin security scanners run
-   YARA over skill files and flag the literal string as an injection, which is
-   how a sibling plugin once scored a critical finding for documenting an attack.)
+   Then have the user send a message the guardrails block — asking to be shown
+   all the API keys works well — and confirm it comes back blocked. That proves
+   the hook itself is running. (Deliberately not spelling out a prompt-injection
+   payload here: plugin security scanners run YARA over skill files and flag the
+   literal string as an injection, which is how a sibling plugin once scored a
+   critical finding for documenting an attack.)
 
    Then say plainly what is now on: prompt screening on every message, Bash
-   command authorization, web-content scanning, and the `check_input` /
-   `authorize_action` tools.
+   command authorization, web-content scanning, and security scanning of file
+   writes.
 
 ## Cloud sessions (Cowork)
 
@@ -148,7 +148,7 @@ everybody misses, and without it a correct key still fails.
    ```
 
    This is the one place a value reaches the sandbox's real process
-   environment, which is what both the hooks and the MCP server read.
+   environment, which is what the hooks read.
 
    Tell them plainly, without softening it: **that field is plaintext, and
    anyone who can use that environment can read the key.** On a personal
@@ -176,13 +176,13 @@ everybody misses, and without it a correct key still fails.
    }
    ```
 
-   The bundled hooks and MCP server come with the plugin — they do not need to
-   be declared separately.
+   The bundled hooks come with the plugin — they do not need to be declared
+   separately.
 
 Then have them start a **new** cloud session and verify exactly as in step 5:
-`health_check` does not validate the key, so call `check_input` with something
-that should be blocked and confirm it comes back `block`. That single call is
-what proves both the key and the domain allowlist actually took.
+the key check must return `200`, and a message that should be blocked must come
+back blocked. Together those prove both the key and the domain allowlist
+actually took.
 
 If checks appear to do nothing, or the guardrails report the service is
 unreachable, **suspect the domain allowlist first** — that is step 1, and a

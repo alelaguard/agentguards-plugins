@@ -182,10 +182,12 @@ func hasClaudeMarketplace() (bool, error) {
 
 // --- Codex --------------------------------------------------------------------
 
-// codexMinVersion is the first Codex plugin whose hooks run as PowerShell on
-// Windows. 0.2.16 ran them through `agentguards hook`, which CLI 0.3 no longer has,
-// and older ones don't run on Windows at all. Older installs are upgraded.
-const codexMinVersion = "0.2.17"
+// codexMinVersion is the oldest Codex plugin the installer leaves in place. 0.2.18
+// dropped the bundled MCP server (it read only AGENTGUARDS_API_KEY, so it failed for
+// anyone set up by the installer); 0.2.17 was the first whose hooks run as
+// PowerShell on Windows. Codex has no plugin update command, so older installs are
+// replaced.
+const codexMinVersion = "0.2.18"
 
 var semverRe = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
 

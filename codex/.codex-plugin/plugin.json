@@ -1,7 +1,7 @@
 {
   "name": "agentguards-codex",
-  "description": "LLM security guardrails for OpenAI Codex — jailbreak detection, prompt-injection and web-content scanning, data-exfiltration blocking, and destructive-command authorization. Bundles enforcing hooks plus the AgentGuards MCP server.",
-  "version": "0.2.17",
+  "description": "LLM security guardrails for OpenAI Codex — jailbreak detection, prompt-injection and web-content scanning, data-exfiltration blocking, and destructive-command authorization. Enforced by hooks on every prompt, shell command, fetched page and file edit.",
+  "version": "0.2.18",
   "author": {
     "name": "AgentGuards",
     "email": "support@agentguards.co",
@@ -12,7 +12,6 @@
   "license": "MIT",
   "skills": "./skills/",
   "hooks": "./hooks/hooks.json",
-  "mcpServers": "./.mcp.json",
   "keywords": [
     "security",
     "guardrails",
@@ -24,7 +23,7 @@
   "interface": {
     "displayName": "AgentGuards",
     "shortDescription": "LLM security guardrails for Codex",
-    "longDescription": "AgentGuards screens what Codex does — every prompt and every shell command — and surfaces anything risky for approval before it runs. Enforcing hooks provide jailbreak and prompt-injection detection, web-content scanning, data-exfiltration blocking, and destructive-command authorization, backed by the AgentGuards MCP tools. Fail-closed by default; switch to fail-open with a single environment variable.",
+    "longDescription": "AgentGuards screens what Codex does — every prompt and every shell command — and surfaces anything risky for approval before it runs. Enforcing hooks provide jailbreak and prompt-injection detection, web-content scanning, data-exfiltration blocking, and destructive-command authorization. Nothing for the model to call: the hooks act on their own. Fail-closed by default; switch to fail-open with a single environment variable.",
     "developerName": "AgentGuards",
     "category": "Developer Tools",
     "capabilities": ["Read"],
@@ -36,7 +35,7 @@
     "composerIcon": "./assets/logo.png",
     "defaultPrompt": [
       "Confirm AgentGuards guardrails are active and the service is healthy.",
-      "Screen this input with AgentGuards before I act on it:"
+      "Explain how AgentGuards screens my prompts and shell commands."
     ]
   }
 }

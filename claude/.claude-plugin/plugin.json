@@ -1,8 +1,8 @@
 {
   "name": "agentguards-claude",
   "displayName": "AgentGuards",
-  "description": "LLM security guardrails for Claude Code — jailbreak detection, prompt-injection and web-content scanning, data-exfiltration blocking, and destructive-command authorization. Bundles the AgentGuards MCP server plus enforcing hooks.",
-  "version": "0.2.33",
+  "description": "LLM security guardrails for Claude Code — jailbreak detection, prompt-injection and web-content scanning, data-exfiltration blocking, and destructive-command authorization. Enforced by hooks on every prompt, shell command, fetched page and file write.",
+  "version": "0.2.34",
   "author": {
     "name": "AgentGuards",
     "email": "support@agentguards.co",
