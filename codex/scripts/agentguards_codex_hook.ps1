@@ -1,36 +1,12 @@
 <#
-.SYNOPSIS
-    Claude Code hook for AgentGuards guardrails - Windows.
+AgentGuards hook for Codex on Windows - PowerShell port of agentguards_codex_hook.py.
 
-.DESCRIPTION
-    PowerShell port of agentguards_hook.py, which Linux and macOS run. Windows ships
-    no Python, and a hook that cannot launch exits non-zero-and-not-2, which Claude
-    Code treats as a NON-BLOCKING error: guardrails silently off. Hence this port.
-
-    Behaviour must match the Python hook exactly; tests/test_claude_ps1_parity.py
-    runs both against the same mock API. Exits 0 (allow) or 2 (block - the only exit
-    code Claude Code treats as blocking; the reason goes to stderr). PostToolUse
-    cannot block, so fetched content is withheld or redacted via exit-0 JSON
-    (updatedToolOutput).
-
-    Written for Windows PowerShell 5.1 (the interpreter on a stock Windows box); also
-    runs on PowerShell 7. Keep this file ASCII: 5.1 reads a BOM-less script as
-    Windows-1252.
-
-.PARAMETER EventType
-    UserPromptSubmit, PreToolUse or PostToolUse.
-
-.NOTES
-    Environment variables:
-      AGENTGUARDS_URL            Base URL (default https://prod.agentguards.co)
-      AGENTGUARDS_API_KEY        Your ag_ token (else the plugin option, else the
-                                 key saved by `agentguards login`)
-      AGENTGUARDS_FAIL_OPEN      true = allow when the service is unreachable
-      AGENTGUARDS_CA_BUNDLE      PEM to trust (self-hosted appliance)
-      AGENTGUARDS_TLS_NO_VERIFY  true = skip certificate verification entirely
+Codex runs it through commandWindows in hooks/hooks.json:
+    powershell -NoProfile -ExecutionPolicy Bypass -File agentguards_codex_hook.ps1 <Event>
+Behaviour must match the Python hook exactly; tests/test_codex_ps1_parity.py runs both
+against the same mock API. Keep this file ASCII (Windows PowerShell 5.1 reads a
+BOM-less script as Windows-1252).
 #>
-
-param([Parameter(Position = 0)][string]$EventType)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Off
@@ -532,296 +508,293 @@ function Read-Event {
 }
 # <<< AGENTGUARDS SHARED CORE
 
-# --- Claude Code-specific -------------------------------------------------------------
+# --- Codex-specific ---------------------------------------------------------------------
 
-$script:ClientName = 'claude-code/ps1'
-# (os.getenv(...) or default): an EMPTY value also means the default here.
+$script:ClientName = 'codex/ps1'
+# os.getenv(name, default): the default applies only when UNSET, as in the Python hook.
 $script:AgentGuardsUrl = $env:AGENTGUARDS_URL
-if ([string]::IsNullOrEmpty($script:AgentGuardsUrl)) { $script:AgentGuardsUrl = 'https://prod.agentguards.co' }
+if ($null -eq $script:AgentGuardsUrl) { $script:AgentGuardsUrl = 'https://prod.agentguards.co' }
 $script:AgentGuardsUrl = $script:AgentGuardsUrl.TrimEnd('/')
-$script:ApprovalsPath = Join-Path (Join-Path (Get-HomeDir) '.claude') 'agentguards_session_approvals.json'
+$script:ApprovalsPath = Join-Path (Join-Path (Get-HomeDir) '.codex') 'agentguards_session_approvals.json'
 
-# Env var, then the plugin's configured option, then the installer's saved key.
-$script:ApiKey = $env:AGENTGUARDS_API_KEY
-if ([string]::IsNullOrEmpty($script:ApiKey)) { $script:ApiKey = $env:CLAUDE_PLUGIN_OPTION_AGENTGUARDS_API_KEY }
-if ([string]::IsNullOrEmpty($script:ApiKey)) { $script:ApiKey = Get-InstallerKey }
+function Get-ApiKey {
+    $key = $env:AGENTGUARDS_API_KEY
+    if ($null -ne $key) { $key = $key.Trim() }
+    if (-not [string]::IsNullOrEmpty($key)) { return $key }
+    $tokenFile = Join-Path (Join-Path (Get-HomeDir) '.codex') 'agentguards_token'
+    if (Test-Path -LiteralPath $tokenFile) {
+        $token = ([System.IO.File]::ReadAllText($tokenFile, [System.Text.Encoding]::UTF8)).Trim()
+        # an empty/blanked token file must not hide the installer's key
+        if ($token.Length -gt 0) { return $token }
+    }
+    return (Get-InstallerKey)
+}
+$script:ApiKey = Get-ApiKey
 
 $DefaultCommandPanel = "$Shield [AgentGuards] Command blocked`nDecision: deny`nReason: policy - flagged by AgentGuards guardrails`nSeverity: high"
 
-function Exit-Allow { exit 0 }
+function Exit-Continue { exit 0 }
 
-# Claude Code blocks ONLY on exit code 2 (stderr is shown). Exit 1 would let it through.
-function Exit-Block([string]$Reason) {
-    Write-Err $Reason
-    exit 2
+function Exit-BlockPrompt([string]$Reason) {
+    Write-JsonOut ([ordered]@{ decision = 'block'; reason = $Reason })
+    exit 0
 }
 
-function Exit-PreTool([string]$Permission, [string]$Reason) {
+# PostToolUse block: decision "block" makes Codex replace the tool result before the
+# model sees it.
+function Exit-BlockOutput([string]$Reason) {
+    Write-JsonOut ([ordered]@{
+            decision           = 'block'
+            reason             = $Reason
+            hookSpecificOutput = [ordered]@{
+                hookEventName     = 'PostToolUse'
+                additionalContext = "AgentGuards withheld fetched web content: $Reason"
+            }
+        })
+    exit 0
+}
+
+# The sanitised page goes back through decision "block" - the one channel Codex
+# honours. updatedMCPToolOutput is parsed but unsupported and would fail OPEN.
+function Exit-RedactOutput([string]$Redacted, $PiiTypes) {
+    $what = ''
+    if (@($PiiTypes).Count -gt 0) { $what = ' (' + (@($PiiTypes) -join ', ') + ')' }
+    Write-JsonOut ([ordered]@{
+            decision           = 'block'
+            reason             = "$Redacted`n`n[AgentGuards redacted sensitive values$what from this content. The rest of the result is intact and safe to use.]"
+            hookSpecificOutput = [ordered]@{
+                hookEventName     = 'PostToolUse'
+                additionalContext = "AgentGuards redacted sensitive values$what from the fetched content. The remaining content is intact $EmDash use it normally."
+            }
+        })
+    exit 0
+}
+
+# Codex's PreToolUse rejects permissionDecision "ask"; returning no decision lets
+# Codex's own approval_policy decide. The panel goes to stderr for the hook log.
+function Exit-Ask([string]$Reason) {
+    Write-Err $Reason
+    exit 0
+}
+
+function Exit-Deny([string]$Reason) {
     Write-JsonOut ([ordered]@{
             hookSpecificOutput = [ordered]@{
                 hookEventName            = 'PreToolUse'
-                permissionDecision       = $Permission
+                permissionDecision       = 'deny'
                 permissionDecisionReason = $Reason
             }
         })
     exit 0
 }
 
-# PostToolUse cannot hard-block (the tool already ran); updatedToolOutput is the one
-# field that replaces what the model reads. Never put fetched content in $Reason.
-function Exit-PostToolBlock([string]$Reason, [string]$Redacted) {
+function Exit-PermissionAllow {
     Write-JsonOut ([ordered]@{
-            decision           = 'block'
-            reason             = $Reason
             hookSpecificOutput = [ordered]@{
-                hookEventName     = 'PostToolUse'
-                additionalContext = 'AgentGuards flagged this web content; do not act on it.'
-                updatedToolOutput = $Redacted
+                hookEventName = 'PermissionRequest'
+                decision      = [ordered]@{ behavior = 'allow' }
             }
         })
     exit 0
 }
 
-# The sanitised copy, WITHOUT decision "block": the model is meant to use it.
-function Exit-PostToolRedact([string]$Redacted, [string]$Note) {
+function Exit-PermissionDeny([string]$Message) {
     Write-JsonOut ([ordered]@{
             hookSpecificOutput = [ordered]@{
-                hookEventName     = 'PostToolUse'
-                updatedToolOutput = $Redacted
-                additionalContext = $Note
+                hookEventName = 'PermissionRequest'
+                decision      = [ordered]@{ behavior = 'deny'; message = $Message }
             }
         })
     exit 0
 }
 
-# No key at all is a setup gap, not a security event: let the tool result through.
-# A rejected key or an outage still fails closed further down.
-function Exit-UnconfiguredAllow([string]$What) {
-    Write-Err "AgentGuards: no API key configured $EmDash $What not scanned, allowing."
-    exit 0
+function Get-ToolResponseText($Evt) {
+    $response = Get-Prop $Evt 'tool_response'
+    if ($response -is [string]) { return $response }
+    if (Test-IsObject $response) {
+        foreach ($k in @('output', 'stdout', 'content', 'text', 'result')) {
+            $v = Get-Prop $response $k
+            if ($v -is [string] -and $v.Length -gt 0) { return $v }
+        }
+        return ($response | ConvertTo-Json -Depth 20 -Compress)
+    }
+    return ''
+}
+
+function Invoke-WebScan([string]$Content) {
+    if ($Content.Trim().Length -eq 0) { return }
+    try {
+        $result = Invoke-AgentGuards '/v1/guardrails/evaluate-input' ([ordered]@{ text = $Content; use_case = 'web_fetch'; channel = 'codex_hook' })
+    } catch [AgentGuardsQuotaError] {
+        Exit-BlockOutput "AgentGuards request quota reached: $($_.Exception.UserMessage) Fetched web content withheld."
+    } catch {
+        $err = Get-ErrorText $_
+        if (Test-FailOpen) {
+            Write-Err "AgentGuards: service unreachable ($err), allowing web content (AGENTGUARDS_FAIL_OPEN=true)"
+            return
+        }
+        Exit-BlockOutput "AgentGuards unreachable ($err) $EmDash fetched web content withheld (fail-closed)."
+    }
+    $decision = Get-Decision $result
+    $redacted = Get-Prop $result 'redacted_text'
+    if ($decision -ceq 'redact' -and $redacted -is [string] -and $redacted.Trim().Length -gt 0 -and (Test-OnlyPiiFailed $result)) {
+        Exit-RedactOutput $redacted (Get-RedactedTypes $result)
+    }
+    if ($decision -cne 'allow') {
+        # Never append flagged_input here: it is an excerpt of the page we just
+        # judged too dangerous to show.
+        Exit-BlockOutput (Get-Message $result 'message' "$Shield [AgentGuards] Web content blocked`nDecision: block`nReason: policy - flagged by AgentGuards guardrails`nSeverity: high")
+    }
 }
 
 function Invoke-UserPrompt($Evt) {
     $prompt = Get-Prop $Evt 'prompt' ''
     if (-not ($prompt -is [string])) { $prompt = ConvertTo-PyStr $prompt }
-    if ($prompt.Trim().Length -eq 0) { Exit-Allow }
+    if ($prompt.Trim().Length -eq 0) { Exit-Continue }
     try {
-        $result = Invoke-AgentGuards '/v1/guardrails/evaluate-input' ([ordered]@{ text = $prompt; use_case = 'claude_code' })
+        $result = Invoke-AgentGuards '/v1/guardrails/evaluate-input' ([ordered]@{ text = $prompt; use_case = 'check' })
     } catch [AgentGuardsQuotaError] {
-        Exit-Block "**[AgentGuards] Request quota reached**`n$($_.Exception.UserMessage)"
+        Exit-BlockPrompt "[AgentGuards] Request quota reached: $($_.Exception.UserMessage)"
     } catch {
         $err = Get-ErrorText $_
         if (Test-FailOpen) {
             Write-Err "AgentGuards: service unreachable ($err), allowing prompt (AGENTGUARDS_FAIL_OPEN=true)"
-            Exit-Allow
+            Exit-Continue
         }
-        Exit-Block "**[AgentGuards] Request blocked**`nAgentGuards is unreachable ($err) and the hook is fail-closed.`n$(Get-UnreachableRemedy $_)"
+        Exit-BlockPrompt "[AgentGuards] Prompt blocked: service unreachable ($err); the hook is fail-closed. $(Get-UnreachableRemedy $_)"
     }
-    # Deliberately not appending flagged_input: the user just typed this prompt.
-    if (@('block', 'escalate') -ccontains (Get-Decision $result)) {
-        Exit-Block (Get-Message $result 'message' "$Shield [AgentGuards] Prompt blocked`nReason: policy - flagged by AgentGuards guardrails")
+    if (@('block', 'escalate', 'redact') -ccontains (Get-Decision $result)) {
+        Exit-BlockPrompt (Get-Message $result 'message' "$Shield [AgentGuards] Prompt blocked`nReason: policy - flagged by AgentGuards guardrails")
     }
-    Exit-Allow
+    Exit-Continue
 }
 
-function Get-ToolInput($Evt) {
+function Get-ToolContext($Evt) {
     $toolInput = Get-Prop $Evt 'tool_input'
-    if (-not (Test-PyTruthy $toolInput)) { return $null }
-    return $toolInput
+    if (-not (Test-PyTruthy $toolInput)) { $toolInput = $null }
+    $raw = Get-Prop $toolInput 'command'
+    $sid = Get-Prop $Evt 'session_id' ''
+    if ($null -eq $sid) { $sid = '' }
+    $tool = Get-Prop $Evt 'tool_name' ''
+    if (-not (Test-PyTruthy $tool)) { $tool = 'shell' }
+    return @{ Input = $toolInput; Raw = $raw; Command = (Get-CommandText $raw); Session = [string]$sid; Tool = $tool }
 }
 
-function Get-SessionId($Evt) {
-    $sid = Get-Prop $Evt 'session_id' ''
-    if ($null -eq $sid) { return '' }
-    return [string]$sid
+function Invoke-Authorize($Ctx) {
+    return (Invoke-AgentGuards '/v1/actions/authorize' ([ordered]@{
+                action     = 'shell_command'
+                tool       = $Ctx.Tool
+                parameters = [ordered]@{ command = $Ctx.Raw }
+            }))
 }
 
 function Invoke-PreToolUse($Evt) {
-    if ((Get-Prop $Evt 'tool_name' '') -cne 'Bash') { Exit-Allow }
-    $raw = Get-Prop (Get-ToolInput $Evt) 'command' ''
-    $command = Get-CommandText $raw
-    $session = Get-SessionId $Evt
+    $ctx = Get-ToolContext $Evt
+    if ($ctx.Command.Length -eq 0) { Exit-Continue }
     try {
-        $result = Invoke-AgentGuards '/v1/actions/authorize' ([ordered]@{
-                action     = 'shell_command'
-                tool       = 'Bash'
-                parameters = [ordered]@{ command = $raw }
-            })
+        $result = Invoke-Authorize $ctx
     } catch [AgentGuardsQuotaError] {
-        Exit-Block "**[AgentGuards] Request quota reached**`n$($_.Exception.UserMessage)"
+        Exit-Deny "AgentGuards request quota reached: $($_.Exception.UserMessage)"
     } catch {
         $err = Get-ErrorText $_
         if (Test-FailOpen) {
             Write-Err "AgentGuards: service unreachable ($err), allowing tool call (AGENTGUARDS_FAIL_OPEN=true)"
-            Exit-Allow
+            Exit-Continue
         }
-        Exit-Block "**[AgentGuards] Command blocked**`nAgentGuards is unreachable ($err) and the hook is fail-closed.`n$(Get-UnreachableRemedy $_)"
+        Exit-Deny "AgentGuards is unreachable ($err) and the hook is fail-closed. $(Get-UnreachableRemedy $_)"
     }
     $decision = Get-Decision $result
     $reason = Get-Message $result 'reason' $DefaultCommandPanel
-    $shown = Get-Shown $command
-    if ($decision -ceq 'deny') { Exit-PreTool 'deny' "$reason`n`n    $shown" }
-    if ($decision -ceq 'allow') { Exit-PreTool 'allow' 'AgentGuards: safe baseline' }
-    if (Test-AllApproved (Get-CommandBinaries $command) $session) {
-        Exit-PreTool 'allow' 'AgentGuards: approved earlier this session'
-    }
-    # The user is about to be asked: only an asked-and-then-ran command is remembered.
-    Set-Pending $session $command
-    Exit-PreTool 'ask' "$reason`n`n    $shown"
+    $shown = Get-Shown $ctx.Command
+    if ($decision -ceq 'deny') { Exit-Deny "$reason`n`n    $shown" }
+    if ($decision -ceq 'allow') { Exit-Continue }
+    if (Test-AllApproved (Get-CommandBinaries $ctx.Command) $ctx.Session) { Exit-Continue }
+    Exit-Ask "$reason`n`n    $shown"
 }
 
-# WebFetch returns a string, WebSearch a list of result objects, a Bash fetch an
-# object with stdout. Older builds name the field tool_result.
-function Get-WebText($Evt) {
-    $response = Get-Prop $Evt 'tool_response'
-    if ($null -eq $response) { $response = Get-Prop $Evt 'tool_result' }
-    if ($response -is [string]) { return $response }
-    if (Test-IsObject $response) {
-        foreach ($k in @('result', 'content', 'text', 'output', 'stdout')) {
-            $v = Get-Prop $response $k
-            if ($v -is [string]) { return $v }
-        }
-        return ($response | ConvertTo-Json -Depth 20 -Compress)
-    }
-    if (Test-IsList $response) {
-        $parts = [System.Collections.Generic.List[string]]::new()
-        foreach ($item in $response) {
-            if (Test-IsObject $item) {
-                $fields = [System.Collections.Generic.List[string]]::new()
-                foreach ($k in @('title', 'snippet', 'content', 'url')) {
-                    $v = Get-Prop $item $k
-                    if (Test-PyTruthy $v) { $fields.Add((ConvertTo-PyStr $v)) }
-                }
-                $parts.Add(($fields -join ' '))
-            } else {
-                $parts.Add((ConvertTo-PyStr $item))
-            }
-        }
-        return ((@($parts) | Where-Object { $_.Length -gt 0 }) -join "`n")
-    }
-    return ''
-}
-
-function Invoke-WebContent($Evt) {
-    $text = Get-WebText $Evt
-    if ($null -eq $text -or $text.Trim().Length -eq 0) { Exit-Allow }
-    if ([string]::IsNullOrEmpty($script:ApiKey)) { Exit-UnconfiguredAllow 'web content' }
+# Fires only when Codex is already about to prompt the user. The ONLY place Codex
+# may mark an approval pending: PreToolUse's no-decision path may run unasked.
+function Invoke-PermissionRequest($Evt) {
+    $ctx = Get-ToolContext $Evt
+    if ($ctx.Command.Length -eq 0) { Exit-Continue }
     try {
-        $result = Invoke-AgentGuards '/v1/guardrails/evaluate-input' ([ordered]@{ text = $text; use_case = 'web_fetch'; channel = 'claude_code' })
-    } catch [AgentGuardsQuotaError] {
-        Exit-PostToolBlock "AgentGuards request quota reached $EmDash $($_.Exception.UserMessage)" "[AgentGuards: web content withheld $EmDash request quota reached]"
+        $result = Invoke-Authorize $ctx
     } catch {
-        $err = Get-ErrorText $_
-        if (Test-FailOpen) {
-            Write-Err "AgentGuards: service unreachable ($err), allowing web content (AGENTGUARDS_FAIL_OPEN=true)"
-            Exit-Allow
-        }
-        Exit-PostToolBlock "AgentGuards unreachable ($err) (fail-closed)" "[AgentGuards: web content withheld $EmDash service unreachable]"
+        # The user is already being asked - don't hard-block their approval.
+        Exit-Continue
     }
     $decision = Get-Decision $result
-    $redacted = Get-Prop $result 'redacted_text'
-    if ($decision -ceq 'redact' -and $redacted -is [string] -and $redacted.Trim().Length -gt 0 -and (Test-OnlyPiiFailed $result)) {
-        $types = @(Get-RedactedTypes $result)
-        $what = ''
-        if ($types.Count -gt 0) { $what = ' (' + ($types -join ', ') + ')' }
-        Exit-PostToolRedact $redacted "AgentGuards redacted sensitive values$what from this content. The rest of the result is intact and safe to use."
-    }
-    if ($decision -cne 'allow') {
-        # Never append flagged_input: it is an excerpt of the content being withheld.
-        $message = Get-Message $result 'message' "$Shield [AgentGuards] Web content blocked`nDecision: block`nReason: policy - flagged by AgentGuards guardrails`nSeverity: high"
-        Exit-PostToolBlock $message '[AgentGuards: web content withheld]'
-    }
-    Exit-Allow
+    $reason = Get-Message $result 'reason' $DefaultCommandPanel
+    $shown = Get-Shown $ctx.Command
+    if ($decision -ceq 'deny') { Exit-PermissionDeny "$reason`n`n    $shown" }
+    if (Test-AllApproved (Get-CommandBinaries $ctx.Command) $ctx.Session) { Exit-PermissionAllow }
+    Set-Pending $ctx.Session $ctx.Command
+    if ($decision -cne 'allow') { Write-Err "$reason`n`n    $shown" }
+    Exit-Continue
 }
 
-# (file_path, written content) for Write / Edit / MultiEdit.
-function Get-WriteContent($ToolInput) {
+function Invoke-CodeScan($ToolInput) {
     $filePath = Get-Prop $ToolInput 'file_path'
+    if (-not (Test-PyTruthy $filePath)) { $filePath = Get-Prop $ToolInput 'path' }
     $content = ''
-    if (Test-HasProp $ToolInput 'content') {
-        $v = Get-Prop $ToolInput 'content'
-        if (Test-PyTruthy $v) { $content = ConvertTo-PyStr $v }
-    } elseif (Test-HasProp $ToolInput 'new_string') {
-        $v = Get-Prop $ToolInput 'new_string'
-        if (Test-PyTruthy $v) { $content = ConvertTo-PyStr $v }
-    } else {
-        $edits = Get-Prop $ToolInput 'edits'
-        if (Test-IsList $edits) {
-            $parts = @()
-            foreach ($e in $edits) {
-                if (-not (Test-IsObject $e)) { continue }
-                if (Test-HasProp $e 'new_string') { $parts += , (ConvertTo-PyStr (Get-Prop $e 'new_string')) } else { $parts += , '' }
-            }
-            $content = $parts -join "`n"
-        }
+    foreach ($k in @('patch', 'input', 'diff', 'content')) {
+        $v = Get-Prop $ToolInput $k
+        if ($v -is [string] -and $v.Length -gt 0) { $content = $v; break }
     }
-    return @{ Path = $filePath; Content = $content }
-}
-
-function Invoke-CodeScan($Evt) {
-    $w = Get-WriteContent (Get-ToolInput $Evt)
-    if ($w.Content.Trim().Length -eq 0) { Exit-Allow }
+    if ($content.Trim().Length -eq 0) { return }
     $label = 'file'
-    if (Test-PyTruthy $w.Path) { $label = ConvertTo-PyStr $w.Path }
+    if (Test-PyTruthy $filePath) { $label = ConvertTo-PyStr $filePath }
     Write-Err "AgentGuards: scanning $label for security issues..."
-    if ([string]::IsNullOrEmpty($script:ApiKey)) { Exit-UnconfiguredAllow 'code scan' }
     try {
         # 8s: above the API's own 5s scan timeout, so a slow success isn't abandoned.
-        $result = Invoke-AgentGuards '/v1/code/scan' ([ordered]@{ content = $w.Content; file_path = $w.Path }) 8
+        $result = Invoke-AgentGuards '/v1/code/scan' ([ordered]@{ content = $content; file_path = $filePath }) 8
     } catch [AgentGuardsForbiddenError] {
-        # Not enabled for this tenant: allow, it is not an outage.
-        Exit-Allow
+        return
     } catch [AgentGuardsQuotaError] {
-        Exit-PostToolBlock "AgentGuards request quota reached $EmDash $($_.Exception.UserMessage)" "[AgentGuards: code scan withheld $EmDash request quota reached]"
+        Exit-BlockOutput "AgentGuards request quota reached: $($_.Exception.UserMessage) Write withheld."
     } catch {
         $err = Get-ErrorText $_
         if (Test-FailOpen) {
             Write-Err "AgentGuards: code scan unreachable ($err), allowing write (AGENTGUARDS_FAIL_OPEN=true)"
-            Exit-Allow
+            return
         }
-        Exit-PostToolBlock "AgentGuards unreachable ($err) (fail-closed)" "[AgentGuards: code scan withheld $EmDash service unreachable]"
+        Exit-BlockOutput "AgentGuards unreachable ($err) $EmDash write withheld (fail-closed)."
     }
     $decision = Get-Decision $result
-    if ($decision -ceq 'block') {
-        Exit-PostToolBlock (Get-Message $result 'message' "$Shield [AgentGuards] Code scan blocked`nDecision: block") "[AgentGuards: write blocked $EmDash see the scan findings above]"
-    }
+    if ($decision -ceq 'block') { Exit-BlockOutput (Get-Message $result 'message' '[AgentGuards] Code scan blocked') }
     if ($decision -ceq 'warn' -and (Test-PyTruthy (Get-Prop $result 'message'))) { Write-Err (ConvertTo-PyStr (Get-Prop $result 'message')) }
-    Exit-Allow
 }
 
 function Invoke-PostToolUse($Evt) {
-    $tool = Get-Prop $Evt 'tool_name' ''
-    if (@('WebFetch', 'WebSearch') -ccontains $tool) { Invoke-WebContent $Evt }
-    if (@('Write', 'Edit', 'MultiEdit') -ccontains $tool) { Invoke-CodeScan $Evt }
-    if ($tool -ceq 'Bash') {
-        $command = Get-CommandText (Get-Prop (Get-ToolInput $Evt) 'command' '')
-        # Asked about at PreToolUse and then ran = approved.
-        Complete-Pending (Get-SessionId $Evt) $command
-        if (Test-FetchCommand $command) { Invoke-WebContent $Evt }
+    $ctx = Get-ToolContext $Evt
+    if ($ctx.Command.Length -gt 0 -and (Test-FetchCommand $ctx.Command)) {
+        Invoke-WebScan (Get-ToolResponseText $Evt)
     }
-    Exit-Allow
+    if ((Get-Prop $Evt 'tool_name') -ceq 'apply_patch') { Invoke-CodeScan $ctx.Input }
+    # Asked about at PermissionRequest and then ran = approved.
+    if ($ctx.Command.Length -gt 0) { Complete-Pending $ctx.Session $ctx.Command }
+    Exit-Continue
 }
 
 function Invoke-Main([string]$EventType) {
     $evt = Read-Event
-    if ($null -eq $evt) { Exit-Allow }
+    if ($null -eq $evt) { Exit-Continue }
     if ($EventType -ceq 'PostToolUse') { Invoke-PostToolUse $evt }
+    # Runs while the user is already being asked; a missing key defers, not blocks.
+    if ($EventType -ceq 'PermissionRequest') { Invoke-PermissionRequest $evt }
     if ([string]::IsNullOrEmpty($script:ApiKey)) {
-        # A setup gap, not a security event: warn through the channel each event
-        # surfaces on exit 0 (stderr alone reaches only the debug log).
-        $message = "AgentGuards: no API key configured $EmDash guardrails are OFF for this message. " +
-        'Set AGENTGUARDS_API_KEY (in your shell profile, the "AgentGuards API key" ' +
-        'option on the plugin''s Configure screen, or the ~/.claude/settings.json "env" ' +
-        'block) to turn them on. Tell the user this: they are not protected.'
-        Write-Err $message
-        if ($EventType -ceq 'PreToolUse') { Exit-PreTool 'allow' $message }
-        Write-Out $message
-        Exit-Allow
+        $message = 'AgentGuards is not configured: save your ag_ token to ~/.codex/agentguards_token (or set AGENTGUARDS_API_KEY). The hook is fail-closed.'
+        if ($EventType -ceq 'PreToolUse') { Exit-Deny $message }
+        Exit-BlockPrompt $message
     }
     if ($EventType -ceq 'UserPromptSubmit') { Invoke-UserPrompt $evt }
     if ($EventType -ceq 'PreToolUse') { Invoke-PreToolUse $evt }
-    Exit-Allow
+    Exit-Continue
 }
 
 # Dot-sourcing (tests) loads the functions without running the hook.
-if ($MyInvocation.InvocationName -ne '.') { Invoke-Main $EventType }
+if ($MyInvocation.InvocationName -ne '.') {
+    $eventType = ''
+    if ($args.Count -gt 0) { $eventType = [string]$args[0] }
+    Invoke-Main $eventType
+}

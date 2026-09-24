@@ -1,14 +1,15 @@
-"""The Go Codex hook (`agentguards hook codex <event>`) must behave exactly like the
-Python one it replaces (codex/scripts/agentguards_codex_hook.py).
+"""The PowerShell Codex hook (codex/scripts/agentguards_codex_hook.ps1, used on
+Windows) must behave exactly like the Python one (agentguards_codex_hook.py, used
+on Linux/macOS).
 
 Both runtimes get the same event on stdin, the same environment and a fresh HOME,
 against the same mock AgentGuards API. For every scenario they must produce the
 same exit code, the same verdict on stdout, the same API requests in the same
 order, and the same session-approval file. Messages that embed a transport error
-are compared with the error text masked (Python and Go word socket errors
+are compared with the error text masked (Python and PowerShell word socket errors
 differently); everything else is compared exactly.
 
-Skipped when Go isn't installed (CI runs it in cli-test.yml, which has Go).
+Skipped when PowerShell isn't installed (CI runs it on Windows and Linux).
 """
 
 from __future__ import annotations
@@ -27,18 +28,21 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PY_HOOK = ROOT / "codex" / "scripts" / "agentguards_codex_hook.py"
+PS1 = ROOT / "codex" / "scripts" / "agentguards_codex_hook.ps1"
 KEY = "ag_" + "7" * 32
 
-pytestmark = pytest.mark.skipif(shutil.which("go") is None, reason="needs Go to build the CLI")
+PS_EXE = os.environ.get("PS_EXE", "pwsh")
+pytestmark = pytest.mark.skipif(shutil.which(PS_EXE) is None, reason=f"needs PowerShell ({PS_EXE})")
 
 
-# --- the Go binary --------------------------------------------------------------------
+# --- the PowerShell hook---------------------------------------------------------------
 
 @pytest.fixture(scope="module")
-def go_bin(tmp_path_factory):
-    out = tmp_path_factory.mktemp("bin") / ("agentguards.exe" if os.name == "nt" else "agentguards")
-    subprocess.run(["go", "build", "-o", str(out), "."], cwd=ROOT / "cli", check=True)
-    return out
+def go_bin():
+    """The PowerShell runtime under test (name kept for diff-friendliness with the
+    Python side). PS_EXE picks the host: pwsh (7) by default; CI on Windows also
+    runs it with powershell.exe (5.1), which is what the agents invoke there."""
+    return [PS_EXE, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(PS1)]
 
 
 # --- mock API ---------------------------------------------------------------------------
@@ -102,7 +106,7 @@ def _normalize(obj):
 
 def _canonical_body(body: dict) -> dict:
     """A tool response that is an unrecognised JSON object is screened as its JSON
-    text. Python and Go serialise it with different spacing/key order — same object,
+    text. Python and PowerShell serialise it with different spacing/key order — same object,
     so compare it parsed. Every other field is compared exactly."""
     text = body.get("text")
     if isinstance(text, str) and text.startswith("{"):
@@ -151,7 +155,7 @@ def both(go_bin, api, tmp_path, event_type, event, *, env=None, seed_approvals=N
     env = {k: v for k, v in env.items() if v is not None}
     stdin = raw_stdin if raw_stdin is not None else json.dumps(event)
     results = {}
-    for name, cmd in (("py", [sys.executable, str(PY_HOOK)]), ("go", [str(go_bin), "hook", "codex"])):
+    for name, cmd in (("py", [sys.executable, str(PY_HOOK)]), ("go", list(go_bin))):
         home = tmp_path / name
         home.mkdir()
         if seed_approvals is not None:
@@ -159,7 +163,7 @@ def both(go_bin, api, tmp_path, event_type, event, *, env=None, seed_approvals=N
             (home / ".codex" / "agentguards_session_approvals.json").write_text(json.dumps(seed_approvals))
         results[name] = _run(cmd, event_type, stdin, home, env, api)
     py, go = results["py"], results["go"]
-    assert py["clients"] <= {"codex/py"} and go["clients"] <= {"codex/go"}
+    assert py["clients"] <= {"codex/py"} and go["clients"] <= {"codex/ps1"}
     for field in ("exit", "verdict", "requests", "approvals", "stderr"):
         assert go[field] == py[field], f"{field} differs:\n  python: {py[field]!r}\n  go:     {go[field]!r}"
     return py
@@ -218,7 +222,7 @@ def test_installer_key_file_is_used(go_bin, api, tmp_path):
         d.mkdir(parents=True)
         (d / "credentials.json").write_text(json.dumps({"api_key": KEY}))
     env = {k: v for k, v in os.environ.items() if not k.startswith("AGENTGUARDS_")}
-    for name, cmd in (("py", [sys.executable, str(PY_HOOK)]), ("go", [str(go_bin), "hook", "codex"])):
+    for name, cmd in (("py", [sys.executable, str(PY_HOOK)]), ("go", list(go_bin))):
         home = tmp_path / name
         proc = subprocess.run(cmd + ["UserPromptSubmit"], input=json.dumps(PROMPT), capture_output=True, text=True,
                               env={**env, "HOME": str(home), "USERPROFILE": str(home), "AGENTGUARDS_URL": api.url})
@@ -367,7 +371,7 @@ def test_post_tool_use_code_scan(go_bin, api, tmp_path, route, env):
 def test_approval_flow_end_to_end(go_bin, api, tmp_path):
     """Ask -> PermissionRequest marks pending -> PostToolUse redeems: same file both ways."""
     api.routes["/v1/actions/authorize"] = (200, {"decision": "require-approval", "reason": "r"})
-    for name, cmd in (("py", [sys.executable, str(PY_HOOK)]), ("go", [str(go_bin), "hook", "codex"])):
+    for name, cmd in (("py", [sys.executable, str(PY_HOOK)]), ("go", list(go_bin))):
         home = tmp_path / name
         home.mkdir()
         env = {"AGENTGUARDS_API_KEY": KEY}
@@ -379,19 +383,19 @@ def test_approval_flow_end_to_end(go_bin, api, tmp_path):
     assert set(_approvals(tmp_path / "go")["s1"]["binaries"]) == {"sudo", "make"}
 
 
-def test_go_reads_an_approval_file_python_wrote(go_bin, api, tmp_path):
-    """Switching runtime mid-session keeps approvals: Go honours Python's file."""
+def test_ps1_reads_an_approval_file_python_wrote(go_bin, api, tmp_path):
+    """Switching runtime mid-session keeps approvals: PowerShell honours Python's file."""
     api.routes["/v1/actions/authorize"] = (200, {"decision": "require-approval", "reason": "r"})
     home = tmp_path / "shared"
     home.mkdir()
     env = {"AGENTGUARDS_API_KEY": KEY}
     _run([sys.executable, str(PY_HOOK)], "PermissionRequest", json.dumps(pre("make build")), home, env, api)
     _run([sys.executable, str(PY_HOOK)], "PostToolUse", json.dumps(post("make build", response="ok")), home, env, api)
-    r = _run([str(go_bin), "hook", "codex"], "PreToolUse", json.dumps(pre("make build")), home, env, api)
-    assert r["verdict"] is None and r["stderr_empty"], "Go should honour the approval Python recorded"
+    r = _run(list(go_bin), "PreToolUse", json.dumps(pre("make build")), home, env, api)
+    assert r["verdict"] is None and r["stderr_empty"], "PowerShell should honour the approval Python recorded"
 
 
-# Command parsing, compared function-to-function -----------------------------------------
+# Command parsing, compared function-to-function ---------------------------------------
 
 PARSE_CASES = FETCHES + [
     "sudo -u root -g wheel env A=1 timeout -s KILL 5 python3 x.py",
@@ -407,18 +411,24 @@ PARSE_CASES = FETCHES + [
 ]
 
 
-def test_command_parsing_matches(tmp_path):
+def test_command_parsing_matches(go_bin, tmp_path):
     import importlib.util
     spec = importlib.util.spec_from_file_location("codex_hook_parse", PY_HOOK)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     expected = {c: mod._command_binaries(c) for c in PARSE_CASES}
-    cases = tmp_path / "parse_cases.json"
-    cases.write_text(json.dumps(expected))
-    proc = subprocess.run(["go", "test", "-run", "TestCommandParsingParity", "-count=1", "."],
-                          cwd=ROOT / "cli", env={**os.environ, "AGENTGUARDS_PARSE_CASES": str(cases)},
-                          capture_output=True, text=True)
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+    cases = tmp_path / "cases.json"
+    cases.write_text(json.dumps(PARSE_CASES), encoding="utf-8")
+    # Dot-source the hook (its main only runs when invoked directly) and call the parser.
+    script = (f". '{PS1}'; $cases = Get-Content -Raw -Encoding UTF8 '{cases}' | ConvertFrom-Json; "
+              "$out = [ordered]@{}; foreach ($c in $cases) { $out[$c] = @(Get-CommandBinaries $c) }; "
+              "$out | ConvertTo-Json -Depth 5 -Compress")
+    proc = subprocess.run([PS_EXE, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+                          capture_output=True, text=True, encoding="utf-8")
+    assert proc.returncode == 0, proc.stderr
+    got = json.loads(proc.stdout)
+    for c in PARSE_CASES:
+        assert (got.get(c) or []) == expected[c], f"{c!r}: python {expected[c]} vs ps1 {got.get(c)}"
 
 
 # Review findings, pinned ----------------------------------------------------------------
@@ -462,7 +472,7 @@ def test_short_installer_key_counts_as_configured(go_bin, api, tmp_path):
         (d / "credentials.json").write_text(json.dumps({"api_key": "ag_short"}))
     env = {k: v for k, v in os.environ.items() if not k.startswith("AGENTGUARDS_")}
     outs = {}
-    for name, cmd in (("py", [sys.executable, str(PY_HOOK)]), ("go", [str(go_bin), "hook", "codex"])):
+    for name, cmd in (("py", [sys.executable, str(PY_HOOK)]), ("go", list(go_bin))):
         home = tmp_path / name
         proc = subprocess.run(cmd + ["UserPromptSubmit"], input=json.dumps(PROMPT), capture_output=True, text=True,
                               env={**env, "HOME": str(home), "USERPROFILE": str(home), "AGENTGUARDS_URL": api.url})

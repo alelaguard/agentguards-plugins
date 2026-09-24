@@ -182,9 +182,10 @@ func hasClaudeMarketplace() (bool, error) {
 
 // --- Codex --------------------------------------------------------------------
 
-// codexMinVersion is the first Codex plugin whose hooks run inside agentguards
-// (and so work on Windows and without Python). Older installs are upgraded.
-const codexMinVersion = "0.2.16"
+// codexMinVersion is the first Codex plugin whose hooks run as PowerShell on
+// Windows. 0.2.16 ran them through `agentguards hook`, which CLI 0.3 no longer has,
+// and older ones don't run on Windows at all. Older installs are upgraded.
+const codexMinVersion = "0.2.17"
 
 var semverRe = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
 
@@ -269,8 +270,8 @@ func codexAgent() *Agent {
 			}
 			switch st {
 			case installedEnabled:
-				// Codex has no plugin update command: an install older than the first
-				// binary-backed version is replaced (Codex may then ask to re-trust
+				// Codex has no plugin update command: an install older than
+				// codexMinVersion is replaced (Codex may then ask to re-trust
 				// the hooks once — that's its own safety check).
 				if v := codexPluginVersion(); v != "" && versionLess(v, codexMinVersion) {
 					if _, err := run("codex", "plugin", "remove", plugin); err != nil {
