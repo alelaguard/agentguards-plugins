@@ -1,34 +1,46 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
-// hookRuntimeWarning explains the one thing an install can't fix: until the hooks
-// run inside this binary, they need Python (or PowerShell for Claude on Windows).
-// Without it the Claude hook lets everything through and the Codex hook blocks —
-// so the user must hear about it, not discover it.
+// hookRuntimeWarning explains the one thing an install can't fix. Codex's hooks
+// run inside this binary, so they need nothing else. Claude Code's still run as
+// scripts: PowerShell on Windows (always present) and python3 elsewhere — and
+// without a working python3 the Claude hook lets everything through, so the user
+// must hear about it rather than discover it.
 func hookRuntimeWarning() string {
 	if runtime.GOOS == "windows" {
-		if _, err := lookPath("python3"); err == nil {
-			return ""
-		}
-		if _, err := lookPath("python"); err == nil {
-			return ""
-		}
-		return "Python isn't installed. Claude Code is covered (it uses PowerShell), but the Codex hook needs Python: https://www.python.org/downloads/"
-	}
-	if _, err := lookPath("python3"); err == nil {
 		return ""
 	}
-	return "python3 isn't installed, and the AgentGuards hooks need it to run. Until it is, Claude Code is NOT protected and Codex blocks every prompt. Install Python 3, then restart your agents."
+	if pythonWorks("python3") {
+		return ""
+	}
+	return "python3 isn't installed (or is only a placeholder that asks you to install it), and the Claude Code hook needs it. Until it is, Claude Code is NOT protected. Install Python 3, then restart Claude Code. (Codex is covered either way.)"
+}
+
+// pythonWorks runs the interpreter rather than trusting PATH: Windows ships
+// python/python3 placeholders that only open the Microsoft Store, and a fresh Mac's
+// python3 only offers to install the developer tools. Neither can run a hook.
+var pythonWorks = func(name string) bool {
+	path, err := lookPath(name)
+	if err != nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, path, "--version").CombinedOutput()
+	return err == nil && strings.HasPrefix(strings.TrimSpace(string(out)), "Python 3")
 }
 
 func cmdDoctor(args []string, out io.Writer) error {
@@ -78,7 +90,7 @@ func cmdDoctor(args []string, out io.Writer) error {
 	if warn := hookRuntimeWarning(); warn != "" {
 		bad("%s", warn)
 	} else {
-		ok("hook runtime available")
+		ok("hook runtime available (Codex runs inside agentguards; Claude Code via %s)", claudeRuntimeName())
 	}
 
 	agents := detectAgents()
@@ -127,4 +139,11 @@ func codexTokenFileKey() string {
 		return ""
 	}
 	return strings.TrimSpace(string(b))
+}
+
+func claudeRuntimeName() string {
+	if runtime.GOOS == "windows" {
+		return "PowerShell"
+	}
+	return "python3"
 }

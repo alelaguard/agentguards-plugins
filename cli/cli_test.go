@@ -491,3 +491,36 @@ func TestDoctorChecksTheCodexTokenFileKey(t *testing.T) {
 		t.Fatalf("doctor must flag the stale key Codex actually uses:\n%s", out.String())
 	}
 }
+
+func TestPythonPlaceholderIsNotPython(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX shell script as the fake interpreter")
+	}
+	dir := t.TempDir()
+	// Like the Windows Store alias / macOS stub: on PATH, but can't run anything.
+	stub := filepath.Join(dir, "python3")
+	os.WriteFile(stub, []byte("#!/bin/sh\necho 'Python was not found; run without arguments to install from the Microsoft Store'\nexit 9009\n"), 0o755)
+	oldLook := lookPath
+	lookPath = func(name string) (string, error) { return stub, nil }
+	defer func() { lookPath = oldLook }()
+	if pythonWorks("python3") {
+		t.Fatal("a placeholder must not count as Python")
+	}
+	if hookRuntimeWarning() == "" {
+		t.Fatal("doctor/install must warn when only a placeholder exists")
+	}
+	os.WriteFile(stub, []byte("#!/bin/sh\necho 'Python 3.12.3'\n"), 0o755)
+	if !pythonWorks("python3") {
+		t.Fatal("a real python3 must count")
+	}
+}
+
+func TestHookSupportsProbe(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if code := cmdHook([]string{"--supports", "codex"}, strings.NewReader(""), &out, &errOut); code != 0 {
+		t.Fatal("codex must be reported as supported")
+	}
+	if code := cmdHook([]string{"--supports", "claude"}, strings.NewReader(""), &out, &errOut); code == 0 {
+		t.Fatal("claude isn't ported yet: its launcher must fall back to its scripts")
+	}
+}
