@@ -1,0 +1,3 @@
+# Build output (go build writes ./cli; the release workflow writes dist/)
+/cli
+/dist/
