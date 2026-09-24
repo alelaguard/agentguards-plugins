@@ -16,8 +16,7 @@
         "guardrails",
         "prompt-injection",
         "jailbreak-detection",
-        "llm-security",
-        "mcp"
+        "llm-security"
       ]
     },
     {

@@ -10,11 +10,17 @@ switch to fail-open (availability-first) with a single environment variable
 
 This plugin bundles:
 
-- the **AgentGuards MCP server** (`check_input`, `authorize_action`,
-  `validate_output`, `evaluate_policy`, `health_check`),
 - **enforcing hooks** — `UserPromptSubmit` input scanning, `PreToolUse` Bash
-  authorization, and `PostToolUse` web-content scanning/redaction,
-- the AgentGuards security instructions (the `guardrails` skill).
+  authorization, and `PostToolUse` web-content scanning/redaction and security
+  scanning of file writes,
+- the `setup`, `status` and `guardrails` skills.
+
+There is no MCP server: the hooks enforce everything on their own, so there is
+nothing for Claude to call. (Before 0.2.34 the plugin also bundled one.)
+
+**Easiest install:** the AgentGuards installer signs you in through the browser,
+installs this plugin and saves your key, with nothing to paste. See
+https://agentguards.co for the one-line command. The manual steps are below.
 
 ## Install
 
@@ -24,8 +30,7 @@ This plugin bundles:
 ```
 
 Then provide your API key (get one at
-https://agentguards.co/dashboard/keys) so both the MCP server and the hooks can
-authenticate:
+https://agentguards.co/dashboard/keys) so the hooks can authenticate:
 
 ```
 export AGENTGUARDS_API_KEY=ag_your_token_here
@@ -36,7 +41,7 @@ Claude Code. Or just run `/agentguards:setup` and it will walk you through it.
 
 **No shell profile?** (Claude Desktop's Code tab, or any GUI-launched session
 that doesn't read `~/.bashrc`.) Set it in `~/.claude/settings.json` instead —
-this feeds both the hooks and the MCP server, exactly like a shell export:
+this feeds the hooks exactly like a shell export:
 
 ```json
 {
@@ -46,9 +51,8 @@ this feeds both the hooks and the MCP server, exactly like a shell export:
 }
 ```
 
-The plugin's **Configure** screen also accepts a key, but it is only a fallback
-for the hooks — the bundled MCP server reads the environment variable. Prefer
-one of the two options above so both halves authenticate.
+The plugin's **Configure** screen also accepts a key, as a fallback when the
+environment variable is not set.
 
 **The plain Chat tab is not supported** — hooks do not run there. Use the
 **Code** tab.
@@ -76,15 +80,15 @@ not register with Claude Code on its own; use `/plugin install` above for that.
 
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
-| `AGENTGUARDS_API_KEY` | yes | — | Your `ag_` token. Drives both the MCP header and the hooks. |
+| `AGENTGUARDS_API_KEY` | yes | — | Your `ag_` token. Falls back to the plugin option, then `~/.agentguards/credentials.json` (saved by the installer). |
 | `AGENTGUARDS_URL` | no | `https://prod.agentguards.co` | Override only for a self-hosted instance. |
 | `AGENTGUARDS_FAIL_OPEN` | no | `false` | Hooks fail **closed** by default (block when the service is unreachable). Set `true` to allow on error. |
 
 ## How it works
 
 The hooks call the AgentGuards REST API on every prompt, before every Bash
-command, and after every web fetch — blocking or redacting when AgentGuards
-flags a risk. The MCP tools let Claude cooperatively check inputs and authorize
-actions as described in the bundled `guardrails` skill.
+command, after every web fetch and after every file write — blocking or
+redacting when AgentGuards flags a risk. Claude Code runs them itself, so the
+model cannot skip or talk its way around them.
 
 Learn more at https://agentguards.co.

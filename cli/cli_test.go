@@ -308,7 +308,7 @@ func TestCodexRefreshFailureDoesNotFailAnExistingInstall(t *testing.T) {
 		case "codex plugin marketplace upgrade agentguards-codex":
 			return "", io.ErrUnexpectedEOF // e.g. not a git marketplace
 		case "codex plugin list":
-			return "agentguards-codex@agentguards-codex  installed, enabled  0.2.17\n", nil
+			return "agentguards-codex@agentguards-codex  installed, enabled  0.2.18\n", nil
 		}
 		t.Fatalf("unexpected command %q", cmd)
 		return "", nil
@@ -538,14 +538,14 @@ func TestOldCodexPluginIsUpgradedOnReinstall(t *testing.T) {
 	joined := strings.Join(f.calls, "\n")
 	if !strings.Contains(joined, "codex plugin remove agentguards-codex@agentguards-codex") ||
 		!strings.Contains(joined, "codex plugin add agentguards-codex@agentguards-codex") {
-		t.Fatalf("a pre-0.2.17 Codex plugin must be replaced:\n%s", joined)
+		t.Fatalf("a pre-0.2.18 Codex plugin must be replaced:\n%s", joined)
 	}
 }
 
 func TestCurrentCodexPluginIsLeftAlone(t *testing.T) {
 	f := &fakeRunner{replies: map[string]string{
 		"codex plugin marketplace list": "agentguards-codex /x\n",
-		"codex plugin list":             "agentguards-codex@agentguards-codex  installed, enabled  0.2.17\n",
+		"codex plugin list":             "agentguards-codex@agentguards-codex  installed, enabled  0.2.18\n",
 	}}
 	f.install(t)
 	codexAgent().Install()
