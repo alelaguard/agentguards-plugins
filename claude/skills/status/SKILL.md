@@ -1,4 +1,5 @@
 ---
+name: status
 description: Report AgentGuards guardrail status. Use when the user runs /agentguards:status or asks whether AgentGuards is active, healthy, or correctly configured.
 ---
 

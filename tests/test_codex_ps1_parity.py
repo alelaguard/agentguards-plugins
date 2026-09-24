@@ -134,7 +134,7 @@ def _run(cmd, event_type, stdin, home, env_extra, api):
     env.update(env_extra)
     start = len(api.requests)
     proc = subprocess.run(cmd + [event_type], input=stdin, capture_output=True, text=True,
-                          env=env, timeout=30, encoding="utf-8")
+                          env=env, timeout=90, encoding="utf-8")  # a cold Windows PowerShell 5.1 start can take >30s on CI
     out = proc.stdout.strip()
     verdict = json.loads(out) if out else None
     reqs = [(p, _canonical_body(b)) for p, b, _ in api.requests[start:]]

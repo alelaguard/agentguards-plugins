@@ -1,4 +1,5 @@
 ---
+name: guardrails
 description: How AgentGuards enforces its guardrails in Claude Code — fully automatic, via hooks, with nothing for you to call. Load this if asked how AgentGuards works, whether you need to screen something yourself, or why no agentguards check_input / authorize_action tools are available.
 ---
 

@@ -1,4 +1,5 @@
 ---
+name: setup
 description: Set up and verify AgentGuards in Claude Code. Use when the user runs /agentguards:setup, asks to configure AgentGuards, set their API key, or check that the guardrails are wired up correctly.
 ---
 
