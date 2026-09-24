@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 // hookRuntimeWarning explains the one thing an install can't fix: until the hooks
@@ -62,6 +64,17 @@ func cmdDoctor(args []string, out io.Writer) error {
 		}
 	}
 
+	// The Codex hook prefers its own token file over the saved key, so an old key
+	// there is what Codex really sends — check that one too, or doctor would
+	// report "All good" while Codex uses a revoked key.
+	if tok := codexTokenFileKey(); tok != "" && tok != key {
+		if err := checkKey(tok); err != nil {
+			bad("Codex uses ~/.codex/agentguards_token (it overrides the saved key), and that key failed: %v — delete the file or put a working key in it", err)
+		} else {
+			ok("Codex uses its own key from ~/.codex/agentguards_token, which works")
+		}
+	}
+
 	if warn := hookRuntimeWarning(); warn != "" {
 		bad("%s", warn)
 	} else {
@@ -73,12 +86,14 @@ func cmdDoctor(args []string, out io.Writer) error {
 		bad("no supported coding agent found")
 	}
 	for _, a := range agents {
-		installed, err := a.Installed()
+		st, err := a.State()
 		switch {
 		case err != nil:
 			bad("%s: couldn't check (%v)", a.Name, firstLine(err.Error()))
-		case installed:
+		case st == installedEnabled:
 			ok("%s: AgentGuards installed", a.Name)
+		case st == installedDisabled:
+			bad("%s: AgentGuards is installed but DISABLED — nothing is screened. Run `agentguards install` to re-enable it", a.Name)
 		default:
 			bad("%s: AgentGuards not installed — run `agentguards install`", a.Name)
 		}
@@ -98,4 +113,18 @@ func firstLine(s string) string {
 		}
 	}
 	return s
+}
+
+// codexTokenFileKey is the key in ~/.codex/agentguards_token (the manual Codex
+// setup), which the Codex hook uses before the saved key. "" if none.
+func codexTokenFileKey() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	b, err := os.ReadFile(filepath.Join(home, ".codex", "agentguards_token"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
 }

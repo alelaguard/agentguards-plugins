@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -55,6 +56,12 @@ func postJSON(path string, body any, apiKey string, out any) (int, error) {
 	return resp.StatusCode, nil
 }
 
+// errKeyRejected means the API refused the key itself (revoked or unknown) —
+// the only checkKey failure that justifies getting a new key. Network errors,
+// timeouts, 5xx and quota (429) say nothing about the key and must never trigger
+// a new sign-in: each one would mint another key toward the plan's limit.
+var errKeyRejected = errors.New("the key was rejected")
+
 // checkKey sends one harmless screening request with the key. It is also the
 // tenant's first request, which is what the dashboard counts as "connected".
 func checkKey(apiKey string) error {
@@ -69,7 +76,7 @@ func checkKey(apiKey string) error {
 	}
 	switch {
 	case status == 401 || status == 403:
-		return fmt.Errorf("the key was rejected (HTTP %d)", status)
+		return fmt.Errorf("%w (HTTP %d)", errKeyRejected, status)
 	case status == 429:
 		return fmt.Errorf("the key works, but this account is over its request quota (HTTP 429)")
 	case status != 200:

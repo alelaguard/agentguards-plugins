@@ -46,11 +46,23 @@
         Move-Item -Force (Join-Path $tmp $asset) $exe
         Write-Host "Installed $exe"
 
-        $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-        if (-not (($userPath -split ';') -contains $binDir)) {
-            $newPath = if ($userPath) { "$userPath;$binDir" } else { $binDir }
-            [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
-            Write-Host "Added $binDir to your PATH (new terminals will see it)."
+        # Edit HKCU\Environment directly, reading the RAW value: the Environment API
+        # returns Path with %VARS% expanded and writing that back would flatten
+        # entries like %USERPROFILE%\... into fixed paths for good.
+        $envKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+        try {
+            $rawPath = [string]$envKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            if (-not (($rawPath -split ';') -contains $binDir)) {
+                $kind = if ($envKey.GetValueNames() -contains 'Path') { $envKey.GetValueKind('Path') } else { [Microsoft.Win32.RegistryValueKind]::ExpandString }
+                $newPath = if ($rawPath) { "$($rawPath.TrimEnd(';'));$binDir" } else { $binDir }
+                $envKey.SetValue('Path', $newPath, $kind)
+                # Let running Explorer/new terminals pick it up without a sign-out.
+                [Environment]::SetEnvironmentVariable('AGENTGUARDS_PATH_REFRESH', '1', 'User')
+                [Environment]::SetEnvironmentVariable('AGENTGUARDS_PATH_REFRESH', $null, 'User')
+                Write-Host "Added $binDir to your PATH (new terminals will see it)."
+            }
+        } finally {
+            $envKey.Close()
         }
         Write-Host ''
     } finally {

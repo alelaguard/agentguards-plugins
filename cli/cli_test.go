@@ -235,8 +235,10 @@ func TestClaudeReinstallIsIdempotent(t *testing.T) {
 			t.Fatalf("re-running must not reinstall; ran %q", c)
 		}
 	}
-	if !strings.Contains(strings.Join(f.calls, "\n"), "claude plugin marketplace update agentguards") {
-		t.Fatal("re-running should refresh the marketplace so the plugin updates")
+	joined := strings.Join(f.calls, "\n")
+	if !strings.Contains(joined, "claude plugin marketplace update agentguards") ||
+		!strings.Contains(joined, "claude plugin update agentguards-claude@agentguards") {
+		t.Fatalf("re-running must refresh the marketplace AND update the plugin (how users get hook fixes):\n%s", joined)
 	}
 }
 
@@ -260,7 +262,7 @@ func TestCodexInstallAndDetection(t *testing.T) {
 	}
 	// "not installed" must not read as installed.
 	f.replies["codex plugin list"] = "agentguards-codex@agentguards-codex  installed, enabled  0.2.15\n"
-	if ok, _ := codexAgent().Installed(); !ok {
+	if st, _ := codexAgent().State(); st != installedEnabled {
 		t.Fatal("installed, enabled should be detected")
 	}
 }
@@ -314,5 +316,178 @@ func TestCodexRefreshFailureDoesNotFailAnExistingInstall(t *testing.T) {
 	defer func() { run = old }()
 	if err := codexAgent().Install(); err != nil {
 		t.Fatalf("already installed: a failed refresh must not fail setup, got %v", err)
+	}
+}
+
+// --- review fixes -----------------------------------------------------------------
+
+func TestDisabledClaudePluginIsReEnabled(t *testing.T) {
+	f := &fakeRunner{replies: map[string]string{
+		"claude plugin marketplace list --json": `[{"name":"agentguards"}]`,
+		"claude plugin list --json":             `[{"id":"agentguards-claude@agentguards","enabled":false}]`,
+	}}
+	f.install(t)
+	if st, _ := claudeAgent().State(); st != installedDisabled {
+		t.Fatalf("a disabled plugin must not read as protected; state = %v", st)
+	}
+	if err := claudeAgent().Install(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(f.calls, "\n"), "claude plugin enable agentguards-claude@agentguards") {
+		t.Fatalf("install must re-enable a disabled plugin; calls:\n%s", strings.Join(f.calls, "\n"))
+	}
+}
+
+func TestDisabledCodexPluginIsReportedNotSilentlyAccepted(t *testing.T) {
+	f := &fakeRunner{replies: map[string]string{
+		"codex plugin marketplace list": "agentguards-codex /x\n",
+		"codex plugin list":             "agentguards-codex@agentguards-codex  installed, disabled  0.2.15\n",
+	}}
+	f.install(t)
+	err := codexAgent().Install()
+	if err == nil || !strings.Contains(err.Error(), "disabled") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestCodexRefreshFailureStillInstallsWhenMissing(t *testing.T) {
+	var calls []string
+	old := run
+	run = func(name string, args ...string) (string, error) {
+		cmd := name + " " + strings.Join(args, " ")
+		calls = append(calls, cmd)
+		switch cmd {
+		case "codex plugin marketplace list":
+			return "agentguards-codex /x\n", nil
+		case "codex plugin marketplace upgrade agentguards-codex":
+			return "", io.ErrUnexpectedEOF
+		case "codex plugin list":
+			return "agentguards-codex@agentguards-codex  not installed\n", nil
+		}
+		return "", nil
+	}
+	defer func() { run = old }()
+	if err := codexAgent().Install(); err != nil {
+		t.Fatal(err)
+	}
+	if calls[len(calls)-1] != "codex plugin add agentguards-codex@agentguards-codex" {
+		t.Fatalf("a failed refresh must not stop the install; calls: %v", calls)
+	}
+}
+
+// keyAPI answers evaluate-input with a fixed status and counts device-flow calls.
+func keyAPI(t *testing.T, status int) *int {
+	t.Helper()
+	deviceCalls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/guardrails/evaluate-input":
+			w.WriteHeader(status)
+			io.WriteString(w, `{"decision":"allow"}`)
+		default:
+			deviceCalls++
+			w.WriteHeader(500)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("AGENTGUARDS_URL", srv.URL)
+	return &deviceCalls
+}
+
+func TestSavedKeyIsKeptOnATransientFailure(t *testing.T) {
+	for _, status := range []int{429, 500, 503} {
+		withHome(t)
+		saveCredentials(Credentials{APIKey: goodKey})
+		deviceCalls := keyAPI(t, status)
+		_, _, err := resolveKey(io.Discard, "", nil, false)
+		if err == nil {
+			t.Fatalf("HTTP %d: expected an error, not a new sign-in", status)
+		}
+		if *deviceCalls != 0 {
+			t.Fatalf("HTTP %d: must not start a new sign-in (it would mint another key)", status)
+		}
+		if c, _ := loadCredentials(); c.APIKey != goodKey {
+			t.Fatalf("HTTP %d: saved key must be kept", status)
+		}
+	}
+}
+
+func TestRevokedSavedKeyTriggersSignIn(t *testing.T) {
+	withHome(t)
+	saveCredentials(Credentials{APIKey: goodKey})
+	deviceCalls := keyAPI(t, 401)
+	resolveKey(io.Discard, "", nil, false)
+	if *deviceCalls == 0 {
+		t.Fatal("a revoked key should lead to a new sign-in")
+	}
+}
+
+func TestNewKeyIsSavedEvenIfItsCheckHitsABlip(t *testing.T) {
+	withHome(t)
+	keyAPI(t, 503)
+	if err := adoptKey(io.Discard, goodKey); err != nil {
+		t.Fatalf("a transient check failure must not discard a minted key: %v", err)
+	}
+	if c, err := loadCredentials(); err != nil || c.APIKey != goodKey {
+		t.Fatal("the minted key must be saved")
+	}
+}
+
+func TestUninstallKeepsTheKeyIfARemovalFailed(t *testing.T) {
+	home := withHome(t)
+	saveCredentials(Credentials{APIKey: goodKey})
+	// Put fake claude/codex on PATH so both are "detected".
+	bin := filepath.Join(home, "bin")
+	os.MkdirAll(bin, 0o755)
+	oldLook := lookPath
+	lookPath = func(string) (string, error) { return bin, nil }
+	defer func() { lookPath = oldLook }()
+	old := run
+	run = func(name string, args ...string) (string, error) {
+		cmd := name + " " + strings.Join(args, " ")
+		switch cmd {
+		case "claude plugin list --json":
+			return `[{"id":"agentguards-claude@agentguards","enabled":true}]`, nil
+		case "codex plugin list":
+			return "agentguards-codex@agentguards-codex  installed, enabled\n", nil
+		case "codex plugin remove agentguards-codex@agentguards-codex":
+			return "", io.ErrUnexpectedEOF
+		}
+		return "", nil
+	}
+	defer func() { run = old }()
+	if err := cmdUninstall([]string{"--yes"}, io.Discard, strings.NewReader("")); err == nil {
+		t.Fatal("a failed removal must be reported")
+	}
+	if _, err := loadCredentials(); err != nil {
+		t.Fatal("the key must be kept while a plugin that needs it is still installed")
+	}
+}
+
+func TestDoctorChecksTheCodexTokenFileKey(t *testing.T) {
+	home := withHome(t)
+	saveCredentials(Credentials{APIKey: goodKey})
+	os.MkdirAll(filepath.Join(home, ".codex"), 0o755)
+	stale := "ag_" + strings.Repeat("f", 32)
+	os.WriteFile(filepath.Join(home, ".codex", "agentguards_token"), []byte(stale+"\n"), 0o600)
+	if codexTokenFileKey() != stale {
+		t.Fatal("must read the Codex token file")
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-API-Key") == stale {
+			w.WriteHeader(401)
+			return
+		}
+		io.WriteString(w, `{"decision":"allow"}`)
+	}))
+	defer srv.Close()
+	t.Setenv("AGENTGUARDS_URL", srv.URL)
+	oldLook := lookPath
+	lookPath = func(string) (string, error) { return "", os.ErrNotExist }
+	defer func() { lookPath = oldLook }()
+	var out bytes.Buffer
+	cmdDoctor(nil, &out)
+	if !strings.Contains(out.String(), "agentguards_token") || !strings.Contains(out.String(), "✗ Codex uses") {
+		t.Fatalf("doctor must flag the stale key Codex actually uses:\n%s", out.String())
 	}
 }

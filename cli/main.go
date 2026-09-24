@@ -127,14 +127,36 @@ func resolveKey(out io.Writer, flagKey string, agents []string, openBrowser bool
 		return k, true, nil
 	}
 	if c, err := loadCredentials(); err == nil {
-		if checkKey(c.APIKey) == nil {
+		switch err := checkKey(c.APIKey); {
+		case err == nil:
 			fmt.Fprintln(out, "Using your saved AgentGuards key.")
 			return c.APIKey, false, nil
+		case errors.Is(err, errKeyRejected):
+			fmt.Fprintln(out, "Your saved key was revoked — let's get a new one.")
+		default:
+			// Can't tell whether the key works (offline, timeout, quota): keep it.
+			// Signing in again here would only mint another key.
+			return "", false, fmt.Errorf("couldn't check your saved key: %v — try again in a moment", err)
 		}
-		fmt.Fprintln(out, "Your saved key no longer works — let's get a new one.")
 	}
 	k, err := deviceLogin(out, agents, openBrowser)
 	return k, true, err
+}
+
+// adoptKey saves a key and then checks it. A key minted by sign-in already exists
+// on the server, so it is saved FIRST: if the check then hits a blip (timeout,
+// quota), throwing it away would orphan it. Only an outright rejection is fatal.
+func adoptKey(out io.Writer, k string) error {
+	if err := saveCredentials(Credentials{APIKey: k}); err != nil {
+		return fmt.Errorf("saving your key: %w", err)
+	}
+	if err := checkKey(k); err != nil {
+		if errors.Is(err, errKeyRejected) {
+			return fmt.Errorf("that key doesn't work: %w", err)
+		}
+		fmt.Fprintf(out, "⚠ Key saved, but a test request failed: %v. Run `agentguards doctor` once you're back online.\n", err)
+	}
+	return nil
 }
 
 func cmdInstall(args []string, out io.Writer, in io.Reader) error {
@@ -182,15 +204,16 @@ func cmdInstall(args []string, out io.Writer, in io.Reader) error {
 		return err
 	}
 	if isNew {
-		if err := checkKey(apiKey); err != nil {
-			return fmt.Errorf("that key doesn't work: %w", err)
-		}
-		if err := saveCredentials(Credentials{APIKey: apiKey}); err != nil {
-			return fmt.Errorf("saving your key: %w", err)
+		if err := adoptKey(out, apiKey); err != nil {
+			return err
 		}
 	}
 	p, _ := credentialsPath()
 	fmt.Fprintf(out, "\n✓ Signed in. Key saved to %s\n\n", p)
+	if tok := codexTokenFileKey(); tok != "" && tok != apiKey {
+		fmt.Fprintln(out, "⚠ ~/.codex/agentguards_token holds a different key, and Codex uses it before the saved one.")
+		fmt.Fprintln(out, "  Delete that file to have Codex use the key you just saved.")
+	}
 
 	var failed []string
 	var next []string
@@ -234,10 +257,7 @@ func cmdLogin(args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if err := checkKey(k); err != nil {
-		return fmt.Errorf("that key doesn't work: %w", err)
-	}
-	if err := saveCredentials(Credentials{APIKey: k}); err != nil {
+	if err := adoptKey(out, k); err != nil {
 		return err
 	}
 	p, _ := credentialsPath()
@@ -272,14 +292,16 @@ func cmdUninstall(args []string, out io.Writer, in io.Reader) error {
 		}
 		fmt.Fprintln(out, "✓")
 	}
+	if len(failed) > 0 {
+		// A plugin still installed without its key blocks (Codex) or stops
+		// screening (Claude) — keep the key until it's really gone.
+		return fmt.Errorf("could not fully remove from: %s. Your saved key was kept so those plugins keep working; run uninstall again once they're removed", strings.Join(failed, ", "))
+	}
 	if !*keepKey {
 		if err := removeCredentials(); err != nil {
 			return err
 		}
 		fmt.Fprintln(out, "Removed the saved key (it still exists in your dashboard — revoke it there if you no longer need it).")
-	}
-	if len(failed) > 0 {
-		return fmt.Errorf("could not fully remove from: %s", strings.Join(failed, ", "))
 	}
 	return nil
 }

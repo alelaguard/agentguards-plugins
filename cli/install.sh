@@ -64,6 +64,9 @@ mkdir -p "$BIN_DIR"
 chmod 755 "$tmp/$asset"
 mv "$tmp/$asset" "$BIN_DIR/agentguards"
 echo "Installed $BIN_DIR/agentguards"
+# Clean up now: the `exec` below replaces this shell, so the EXIT trap never runs.
+rm -rf "$tmp"
+trap - EXIT INT TERM
 
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;

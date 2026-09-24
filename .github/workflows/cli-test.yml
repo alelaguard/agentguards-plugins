@@ -74,6 +74,14 @@ jobs:
           if AGENTGUARDS_DOWNLOAD_BASE=http://127.0.0.1:8765 sh cli/install.sh </dev/null; then
             echo "tampered binary was accepted"; exit 1
           fi
+      - name: Seed a %VAR% entry in the user PATH
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $k = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+          $raw = [string]$k.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+          $k.SetValue('Path', "$raw;%USERPROFILE%\agentguards-ci-marker", [Microsoft.Win32.RegistryValueKind]::ExpandString)
+          $k.Close()
       - name: install.ps1 installs and hands off
         if: runner.os == 'Windows'
         shell: pwsh
@@ -87,6 +95,10 @@ jobs:
           if (-not (($log | Out-String) -match 'unknown agent')) { throw 'did not hand off to the binary' }
           $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
           if (-not (($userPath -split ';') -contains (Split-Path $exe))) { throw 'bin dir not added to user PATH' }
+          $k = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment')
+          $raw = [string]$k.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+          if ($raw -notlike '*%USERPROFILE%\agentguards-ci-marker*') { throw "a %VAR% PATH entry was expanded/flattened: $raw" }
+          if ($k.GetValueKind('Path') -ne [Microsoft.Win32.RegistryValueKind]::ExpandString) { throw 'PATH lost its REG_EXPAND_SZ type' }
       - name: install.ps1 refuses a tampered binary
         if: runner.os == 'Windows'
         shell: pwsh
