@@ -453,6 +453,18 @@ def _redeem_pending(session_id: str, command: str) -> None:
     _write_approvals(data)
 
 
+def _command_text(value) -> str:
+    """A shell command as text: accepts a string or an argv list (joined), so a
+    list-shaped command is still screened instead of crashing the hook. The raw
+    value is still what goes to /v1/actions/authorize. Mirrors cli/hook.go's
+    commandText."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return " ".join(str(p) for p in value)
+    return ""
+
+
 _FETCH_BINARIES = {"curl", "wget", "http", "https", "fetch", "aria2c"}
 
 
@@ -699,7 +711,8 @@ def handle_user_prompt(event: dict) -> None:
 def handle_pre_tool_use(event: dict) -> None:
     tool_name = event.get("tool_name", "")
     tool_input = event.get("tool_input", {}) or {}
-    command = tool_input.get("command")
+    raw_command = tool_input.get("command")
+    command = _command_text(raw_command)
     session_id = event.get("session_id", "")
     if not command:
         _continue()
@@ -709,7 +722,7 @@ def handle_pre_tool_use(event: dict) -> None:
             {
                 "action": "shell_command",
                 "tool": tool_name or "shell",
-                "parameters": {"command": command},
+                "parameters": {"command": raw_command},
             },
         )
     except QuotaExceededError as exc:
@@ -730,7 +743,7 @@ def handle_pre_tool_use(event: dict) -> None:
     # The server composes the full structured panel (shield + heading + Decision/
     # Reason/Severity); print it verbatim, then the command that was flagged.
     reason = result.get("reason") or "🛡️ [AgentGuards] Command blocked\nDecision: deny\nReason: policy - flagged by AgentGuards guardrails\nSeverity: high"
-    shown = command if len(str(command)) <= 500 else str(command)[:500] + "..."
+    shown = command if len(command) <= 500 else command[:500] + "..."
     if decision == "deny":
         _deny(f"{reason}\n\n    {shown}")
     if decision == "allow":
@@ -751,7 +764,8 @@ def handle_permission_request(event: dict) -> None:
     # makes the call at Codex's normal prompt.
     tool_name = event.get("tool_name", "")
     tool_input = event.get("tool_input", {}) or {}
-    command = tool_input.get("command")
+    raw_command = tool_input.get("command")
+    command = _command_text(raw_command)
     session_id = event.get("session_id", "")
     # Only shell commands go through the action authorizer; defer apply_patch / MCP
     # tool approvals to Codex's normal prompt.
@@ -763,7 +777,7 @@ def handle_permission_request(event: dict) -> None:
             {
                 "action": "shell_command",
                 "tool": tool_name or "shell",
-                "parameters": {"command": command},
+                "parameters": {"command": raw_command},
             },
         )
     except Exception:
@@ -772,7 +786,7 @@ def handle_permission_request(event: dict) -> None:
         _continue()
     decision = result.get("decision", "allow")
     reason = result.get("reason") or "🛡️ [AgentGuards] Command blocked\nDecision: deny\nReason: policy - flagged by AgentGuards guardrails\nSeverity: high"
-    shown = command if len(str(command)) <= 500 else str(command)[:500] + "..."
+    shown = command if len(command) <= 500 else command[:500] + "..."
     if decision == "deny":
         _permission_deny(f"{reason}\n\n    {shown}")
     binaries = _command_binaries(command)
@@ -847,7 +861,7 @@ def _scan_code(tool_input: dict) -> None:
 def handle_post_tool_use(event: dict) -> None:
     tool_name = event.get("tool_name", "")
     tool_input = event.get("tool_input", {}) or {}
-    command = tool_input.get("command")
+    command = _command_text(tool_input.get("command"))
     # Scan output from web-fetching shell commands before the model sees it.
     if command and _is_fetch_command(command):
         _scan_web_output(_extract_tool_response(event))

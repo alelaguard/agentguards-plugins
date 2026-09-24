@@ -43,6 +43,9 @@ func main() {
 		err = cmdUninstall(os.Args[2:], os.Stdout, os.Stdin)
 	case "login":
 		err = cmdLogin(os.Args[2:], os.Stdout)
+	case "hook":
+		// Called by the agent on every event: stdin is the event, stdout the verdict.
+		os.Exit(cmdHook(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
 	case "version", "--version", "-v":
 		fmt.Println("agentguards", version)
 	case "help", "-h", "--help":

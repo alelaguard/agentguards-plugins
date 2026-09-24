@@ -1,0 +1,3 @@
+# Windows batch files must keep CRLF line endings in every checkout: cmd.exe can
+# misparse labels/goto in LF-only .cmd files. -text stores the bytes exactly.
+*.cmd -text

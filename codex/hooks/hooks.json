@@ -5,8 +5,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "AGENTGUARDS_URL=\"${AGENTGUARDS_URL:-https://prod.agentguards.co}\" python3 \"${PLUGIN_ROOT}/scripts/agentguards_codex_hook.py\" UserPromptSubmit",
-            "statusMessage": "Checking prompt with AgentGuards"
+            "command": "sh \"${PLUGIN_ROOT}/scripts/run-hook.sh\" UserPromptSubmit",
+            "statusMessage": "Checking prompt with AgentGuards",
+            "commandWindows": "\"${PLUGIN_ROOT}\\scripts\\run-hook.cmd\" UserPromptSubmit"
           }
         ]
       }
@@ -16,8 +17,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "AGENTGUARDS_URL=\"${AGENTGUARDS_URL:-https://prod.agentguards.co}\" python3 \"${PLUGIN_ROOT}/scripts/agentguards_codex_hook.py\" PreToolUse",
-            "statusMessage": "Authorizing command with AgentGuards"
+            "command": "sh \"${PLUGIN_ROOT}/scripts/run-hook.sh\" PreToolUse",
+            "statusMessage": "Authorizing command with AgentGuards",
+            "commandWindows": "\"${PLUGIN_ROOT}\\scripts\\run-hook.cmd\" PreToolUse"
           }
         ]
       }
@@ -27,7 +29,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "AGENTGUARDS_URL=\"${AGENTGUARDS_URL:-https://prod.agentguards.co}\" python3 \"${PLUGIN_ROOT}/scripts/agentguards_codex_hook.py\" PostToolUse"
+            "command": "sh \"${PLUGIN_ROOT}/scripts/run-hook.sh\" PostToolUse",
+            "commandWindows": "\"${PLUGIN_ROOT}\\scripts\\run-hook.cmd\" PostToolUse"
           }
         ]
       }
@@ -37,8 +40,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "AGENTGUARDS_URL=\"${AGENTGUARDS_URL:-https://prod.agentguards.co}\" python3 \"${PLUGIN_ROOT}/scripts/agentguards_codex_hook.py\" PermissionRequest",
-            "statusMessage": "Authorizing command with AgentGuards"
+            "command": "sh \"${PLUGIN_ROOT}/scripts/run-hook.sh\" PermissionRequest",
+            "statusMessage": "Authorizing command with AgentGuards",
+            "commandWindows": "\"${PLUGIN_ROOT}\\scripts\\run-hook.cmd\" PermissionRequest"
           }
         ]
       }

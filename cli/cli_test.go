@@ -308,7 +308,7 @@ func TestCodexRefreshFailureDoesNotFailAnExistingInstall(t *testing.T) {
 		case "codex plugin marketplace upgrade agentguards-codex":
 			return "", io.ErrUnexpectedEOF // e.g. not a git marketplace
 		case "codex plugin list":
-			return "agentguards-codex@agentguards-codex  installed, enabled  0.2.15\n", nil
+			return "agentguards-codex@agentguards-codex  installed, enabled  0.2.16\n", nil
 		}
 		t.Fatalf("unexpected command %q", cmd)
 		return "", nil
@@ -489,5 +489,79 @@ func TestDoctorChecksTheCodexTokenFileKey(t *testing.T) {
 	cmdDoctor(nil, &out)
 	if !strings.Contains(out.String(), "agentguards_token") || !strings.Contains(out.String(), "✗ Codex uses") {
 		t.Fatalf("doctor must flag the stale key Codex actually uses:\n%s", out.String())
+	}
+}
+
+func TestPythonPlaceholderIsNotPython(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX shell script as the fake interpreter")
+	}
+	dir := t.TempDir()
+	// Like the Windows Store alias / macOS stub: on PATH, but can't run anything.
+	stub := filepath.Join(dir, "python3")
+	os.WriteFile(stub, []byte("#!/bin/sh\necho 'Python was not found; run without arguments to install from the Microsoft Store'\nexit 9009\n"), 0o755)
+	oldLook := lookPath
+	lookPath = func(name string) (string, error) { return stub, nil }
+	defer func() { lookPath = oldLook }()
+	if pythonWorks("python3") {
+		t.Fatal("a placeholder must not count as Python")
+	}
+	if hookRuntimeWarning() == "" {
+		t.Fatal("doctor/install must warn when only a placeholder exists")
+	}
+	os.WriteFile(stub, []byte("#!/bin/sh\necho 'Python 3.12.3'\n"), 0o755)
+	if !pythonWorks("python3") {
+		t.Fatal("a real python3 must count")
+	}
+}
+
+func TestHookSupportsProbe(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if code := cmdHook([]string{"--supports", "codex"}, strings.NewReader(""), &out, &errOut); code != 0 {
+		t.Fatal("codex must be reported as supported")
+	}
+	if code := cmdHook([]string{"--supports", "claude"}, strings.NewReader(""), &out, &errOut); code == 0 {
+		t.Fatal("claude isn't ported yet: its launcher must fall back to its scripts")
+	}
+}
+
+func TestVersionLess(t *testing.T) {
+	for _, c := range []struct {
+		a, b string
+		want bool
+	}{{"0.2.9", "0.2.16", true}, {"0.2.15", "0.2.16", true}, {"0.2.16", "0.2.16", false}, {"0.3.0", "0.2.16", false}, {"1.0.0", "0.9.9", false}} {
+		if got := versionLess(c.a, c.b); got != c.want {
+			t.Errorf("versionLess(%s, %s) = %v", c.a, c.b, got)
+		}
+	}
+}
+
+func TestOldCodexPluginIsUpgradedOnReinstall(t *testing.T) {
+	f := &fakeRunner{replies: map[string]string{
+		"codex plugin marketplace list": "agentguards-codex /x\n",
+		"codex plugin list":             "agentguards-codex@agentguards-codex  installed, enabled  0.2.15  https://github.com/...\n",
+	}}
+	f.install(t)
+	if err := codexAgent().Install(); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(f.calls, "\n")
+	if !strings.Contains(joined, "codex plugin remove agentguards-codex@agentguards-codex") ||
+		!strings.Contains(joined, "codex plugin add agentguards-codex@agentguards-codex") {
+		t.Fatalf("a pre-0.2.16 Codex plugin must be replaced:\n%s", joined)
+	}
+}
+
+func TestCurrentCodexPluginIsLeftAlone(t *testing.T) {
+	f := &fakeRunner{replies: map[string]string{
+		"codex plugin marketplace list": "agentguards-codex /x\n",
+		"codex plugin list":             "agentguards-codex@agentguards-codex  installed, enabled  0.2.16\n",
+	}}
+	f.install(t)
+	codexAgent().Install()
+	for _, c := range f.calls {
+		if strings.Contains(c, "plugin remove") || strings.Contains(c, "plugin add") {
+			t.Fatalf("up-to-date plugin must not be reinstalled (it would re-prompt for hook trust): %q", c)
+		}
 	}
 }
