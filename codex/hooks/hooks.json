@@ -7,7 +7,7 @@
             "type": "command",
             "command": "sh \"${PLUGIN_ROOT}/scripts/run-hook.sh\" UserPromptSubmit",
             "statusMessage": "Checking prompt with AgentGuards",
-            "commandWindows": "\"${PLUGIN_ROOT}\\scripts\\run-hook.cmd\" UserPromptSubmit"
+            "commandWindows": "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"${PLUGIN_ROOT}\\scripts\\agentguards_codex_hook.ps1\" UserPromptSubmit"
           }
         ]
       }
@@ -19,7 +19,7 @@
             "type": "command",
             "command": "sh \"${PLUGIN_ROOT}/scripts/run-hook.sh\" PreToolUse",
             "statusMessage": "Authorizing command with AgentGuards",
-            "commandWindows": "\"${PLUGIN_ROOT}\\scripts\\run-hook.cmd\" PreToolUse"
+            "commandWindows": "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"${PLUGIN_ROOT}\\scripts\\agentguards_codex_hook.ps1\" PreToolUse"
           }
         ]
       }
@@ -30,7 +30,7 @@
           {
             "type": "command",
             "command": "sh \"${PLUGIN_ROOT}/scripts/run-hook.sh\" PostToolUse",
-            "commandWindows": "\"${PLUGIN_ROOT}\\scripts\\run-hook.cmd\" PostToolUse"
+            "commandWindows": "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"${PLUGIN_ROOT}\\scripts\\agentguards_codex_hook.ps1\" PostToolUse"
           }
         ]
       }
@@ -42,7 +42,7 @@
             "type": "command",
             "command": "sh \"${PLUGIN_ROOT}/scripts/run-hook.sh\" PermissionRequest",
             "statusMessage": "Authorizing command with AgentGuards",
-            "commandWindows": "\"${PLUGIN_ROOT}\\scripts\\run-hook.cmd\" PermissionRequest"
+            "commandWindows": "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"${PLUGIN_ROOT}\\scripts\\agentguards_codex_hook.ps1\" PermissionRequest"
           }
         ]
       }

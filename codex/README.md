@@ -17,8 +17,11 @@ This plugin bundles:
   `validate_output`, `evaluate_policy`, `health_check`),
 - the AgentGuards security instructions (the `guardrails` skill).
 
-The hook is a self-contained Python script — no build step, no native binary.
-It requires Python 3.9+ (already present on most systems).
+The hook is a self-contained script — no build step, no native binary. On Linux
+and macOS it is Python (3.9+, already present on most systems); on Windows Codex
+runs the PowerShell port, `scripts/agentguards_codex_hook.ps1`, with the Windows
+PowerShell every Windows machine ships. Both behave identically (CI runs the same
+scenarios through each).
 
 ## Install
 

@@ -14,11 +14,10 @@ import (
 	"time"
 )
 
-// hookRuntimeWarning explains the one thing an install can't fix. Codex's hooks
-// run inside this binary, so they need nothing else. Claude Code's still run as
-// scripts: PowerShell on Windows (always present) and python3 elsewhere — and
-// without a working python3 the Claude hook lets everything through, so the user
-// must hear about it rather than discover it.
+// hookRuntimeWarning explains the one thing an install can't fix. The hooks of
+// both agents are scripts: PowerShell on Windows (always present) and python3
+// elsewhere. Without a working python3 they cannot run, so the user must hear
+// about it rather than discover it.
 func hookRuntimeWarning() string {
 	if runtime.GOOS == "windows" {
 		return ""
@@ -26,7 +25,7 @@ func hookRuntimeWarning() string {
 	if pythonWorks("python3") {
 		return ""
 	}
-	return "python3 isn't installed (or is only a placeholder that asks you to install it), and the Claude Code hook needs it. Until it is, Claude Code is NOT protected. Install Python 3, then restart Claude Code. (Codex is covered either way.)"
+	return "python3 isn't installed (or is only a placeholder that asks you to install it), and the AgentGuards hooks for Claude Code and Codex need it. Until it is, neither is protected. Install Python 3, then restart your agent."
 }
 
 // pythonWorks runs the interpreter rather than trusting PATH: Windows ships
@@ -90,7 +89,7 @@ func cmdDoctor(args []string, out io.Writer) error {
 	if warn := hookRuntimeWarning(); warn != "" {
 		bad("%s", warn)
 	} else {
-		ok("hook runtime available (Codex runs inside agentguards; Claude Code via %s)", claudeRuntimeName())
+		ok("hook runtime available (%s)", hookRuntimeName())
 	}
 
 	agents := detectAgents()
@@ -101,12 +100,8 @@ func cmdDoctor(args []string, out io.Writer) error {
 		if a.ID != "codex" {
 			continue
 		}
-		// Codex's hooks run this binary, found in ~/.agentguards/bin or on PATH.
-		if !binaryFindableByHooks() {
-			bad("Codex's hooks look for agentguards in ~/.agentguards/bin or on PATH, and this copy is in neither — reinstall with the default location")
-		}
 		if v := codexPluginVersion(); v != "" && versionLess(v, codexMinVersion) {
-			bad("Codex plugin %s is older than %s (its hooks still need python3, and don't run on Windows) — run `agentguards install` to upgrade it", v, codexMinVersion)
+			bad("Codex plugin %s is older than %s — run `agentguards install` to upgrade it", v, codexMinVersion)
 		}
 	}
 	for _, a := range agents {
@@ -153,27 +148,9 @@ func codexTokenFileKey() string {
 	return strings.TrimSpace(string(b))
 }
 
-func claudeRuntimeName() string {
+func hookRuntimeName() string {
 	if runtime.GOOS == "windows" {
 		return "PowerShell"
 	}
 	return "python3"
-}
-
-// binaryFindableByHooks: the Codex launchers look in ~/.agentguards/bin first, then PATH.
-func binaryFindableByHooks() bool {
-	if _, err := lookPath("agentguards"); err == nil {
-		return true
-	}
-	exe, err := os.Executable()
-	if err != nil {
-		return false
-	}
-	dir, err := configDir()
-	if err != nil {
-		return false
-	}
-	exe, _ = filepath.EvalSymlinks(exe)
-	want, _ := filepath.EvalSymlinks(filepath.Join(dir, "bin"))
-	return filepath.Dir(exe) == want
 }

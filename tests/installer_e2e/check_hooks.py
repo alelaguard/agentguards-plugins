@@ -20,7 +20,7 @@ BENIGN = "what is 2 + 2?"
 # agent -> (plugin cache dir, launcher shell, prompt event, client header expected)
 AGENTS = {
     "claude-code": (HOME / ".claude" / "plugins" / "cache", "bash", "UserPromptSubmit", "claude-code/py"),
-    "codex": (HOME / ".codex" / "plugins" / "cache", "sh", "UserPromptSubmit", "codex/go"),
+    "codex": (HOME / ".codex" / "plugins" / "cache", "sh", "UserPromptSubmit", "codex/py"),
 }
 
 

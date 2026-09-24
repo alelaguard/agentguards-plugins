@@ -2,7 +2,7 @@
 
 Blocks any text containing "ignore all previous instructions", allows the rest,
 accepts any ag_ key, and records which client sent each request so the job can
-prove which runtime a hook really used (e.g. Codex -> "codex/go").
+prove which runtime a hook really used (e.g. Codex on Linux/macOS -> "codex/py").
 GET /_requests returns the log. Usage: python mock_api.py PORT
 """
 import json
