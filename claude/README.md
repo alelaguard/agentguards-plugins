@@ -81,7 +81,6 @@ not register with Claude Code on its own; use `/plugin install` above for that.
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
 | `AGENTGUARDS_API_KEY` | yes | — | Your `ag_` token. Falls back to the plugin option, then `~/.agentguards/credentials.json` (saved by the installer). |
-| `AGENTGUARDS_URL` | no | `https://prod.agentguards.co` | Override only for a self-hosted instance. |
 | `AGENTGUARDS_FAIL_OPEN` | no | `false` | Hooks fail **closed** by default (block when the service is unreachable). Set `true` to allow on error. |
 
 ## How it works
