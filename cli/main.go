@@ -114,7 +114,8 @@ func inCloudSession() bool {
 }
 
 // resolveKey picks the key to use: --key, then AGENTGUARDS_API_KEY, then a saved
-// key that still works, then browser sign-in.
+// key that still works, then a working key from an earlier manual agent setup,
+// then browser sign-in.
 func resolveKey(out io.Writer, flagKey string, agents []string, openBrowser bool) (string, bool, error) {
 	if k := strings.TrimSpace(flagKey); k != "" {
 		if !validKey(k) {
@@ -137,6 +138,19 @@ func resolveKey(out io.Writer, flagKey string, agents []string, openBrowser bool
 			// Can't tell whether the key works (offline, timeout, quota): keep it.
 			// Signing in again here would only mint another key.
 			return "", false, fmt.Errorf("couldn't check your saved key: %v — try again in a moment", err)
+		}
+	}
+	// A key from an earlier manual setup: reuse it rather than mint one the hooks
+	// would never send (see existingAgentKeys). isNew so it is saved for every agent.
+	for _, e := range existingAgentKeys() {
+		switch err := checkKey(e.Key); {
+		case err == nil:
+			fmt.Fprintf(out, "Using the AgentGuards key already set in %s.\n", e.Where)
+			return e.Key, true, nil
+		case errors.Is(err, errKeyRejected):
+			fmt.Fprintf(out, "The key in %s was revoked — skipping it.\n", e.Where)
+		default:
+			return "", false, fmt.Errorf("couldn't check the key in %s: %v — try again in a moment", e.Where, err)
 		}
 	}
 	k, err := deviceLogin(out, agents, openBrowser)

@@ -25,6 +25,7 @@ func withHome(t *testing.T) string {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("AGENTGUARDS_API_KEY", "")
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	return home
 }
 
@@ -553,5 +554,102 @@ func TestCurrentCodexPluginIsLeftAlone(t *testing.T) {
 		if strings.Contains(c, "plugin remove") || strings.Contains(c, "plugin add") {
 			t.Fatalf("up-to-date plugin must not be reinstalled (it would re-prompt for hook trust): %q", c)
 		}
+	}
+}
+
+// --- keys from earlier manual setups -------------------------------------------
+
+func writeFile(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Each place an earlier manual setup leaves a key the hooks read before the saved one.
+var existingKeySetups = map[string]func(t *testing.T, home string){
+	"claude plugin setting": func(t *testing.T, home string) {
+		writeFile(t, filepath.Join(home, ".claude", ".credentials.json"),
+			`{"pluginSecrets":{"agentguards-claude@agentguards":{"agentguards_api_key":"`+goodKey+`"}}}`)
+	},
+	"claude settings env": func(t *testing.T, home string) {
+		writeFile(t, filepath.Join(home, ".claude", "settings.json"),
+			`{"env":{"AGENTGUARDS_API_KEY":"`+goodKey+`"}}`)
+	},
+	"codex token file": func(t *testing.T, home string) {
+		writeFile(t, filepath.Join(home, ".codex", "agentguards_token"), goodKey+"\n")
+	},
+}
+
+func TestExistingAgentKeyIsReusedNotReMinted(t *testing.T) {
+	for name, setup := range existingKeySetups {
+		home := withHome(t)
+		setup(t, home)
+		deviceCalls := keyAPI(t, 200)
+		k, isNew, err := resolveKey(io.Discard, "", nil, false)
+		if err != nil || k != goodKey {
+			t.Fatalf("%s: expected the existing key, got %q, %v", name, k, err)
+		}
+		if !isNew {
+			t.Fatalf("%s: the reused key must be saved so every agent's hook gets it", name)
+		}
+		if *deviceCalls != 0 {
+			t.Fatalf("%s: must not sign in again (it would mint a key the hooks never send)", name)
+		}
+	}
+}
+
+func TestClaudeConfigDirIsHonoured(t *testing.T) {
+	withHome(t)
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", dir)
+	writeFile(t, filepath.Join(dir, "settings.json"), `{"env":{"AGENTGUARDS_API_KEY":"`+goodKey+`"}}`)
+	if got := existingAgentKeys(); len(got) != 1 || got[0].Key != goodKey {
+		t.Fatalf("expected the key from CLAUDE_CONFIG_DIR, got %v", got)
+	}
+}
+
+func TestRevokedExistingKeyTriggersSignIn(t *testing.T) {
+	home := withHome(t)
+	existingKeySetups["claude plugin setting"](t, home)
+	deviceCalls := keyAPI(t, 401)
+	resolveKey(io.Discard, "", nil, false)
+	if *deviceCalls == 0 {
+		t.Fatal("a revoked existing key should lead to a new sign-in")
+	}
+}
+
+func TestExistingKeyTransientFailureDoesNotSignIn(t *testing.T) {
+	home := withHome(t)
+	existingKeySetups["claude plugin setting"](t, home)
+	deviceCalls := keyAPI(t, 503)
+	if _, _, err := resolveKey(io.Discard, "", nil, false); err == nil {
+		t.Fatal("expected an error, not a new sign-in")
+	}
+	if *deviceCalls != 0 {
+		t.Fatal("a transient failure must not start a sign-in (it would mint another key)")
+	}
+}
+
+func TestExistingKeyOutputNeverShowsTheKey(t *testing.T) {
+	home := withHome(t)
+	existingKeySetups["claude plugin setting"](t, home)
+	keyAPI(t, 200)
+	var out bytes.Buffer
+	resolveKey(&out, "", nil, false)
+	if strings.Contains(out.String(), goodKey) || !strings.Contains(out.String(), "plugin's settings") {
+		t.Fatalf("output should name where the key came from, never the key: %q", out.String())
+	}
+}
+
+func TestMalformedAgentConfigIsIgnored(t *testing.T) {
+	home := withHome(t)
+	writeFile(t, filepath.Join(home, ".claude", ".credentials.json"), `{"pluginSecrets": "nope"`)
+	writeFile(t, filepath.Join(home, ".claude", "settings.json"), `{"env":{"AGENTGUARDS_API_KEY":"not-a-key"}}`)
+	if got := existingAgentKeys(); len(got) != 0 {
+		t.Fatalf("expected no keys, got %d", len(got))
 	}
 }
