@@ -28,21 +28,17 @@ supply is their API key.
 
    - Restart Codex (or start a new session) so the hooks pick up the key.
 
-2. **Confirm the URL (optional).** AgentGuards defaults to
-   `https://prod.agentguards.co`. Only set `AGENTGUARDS_URL` if the user runs a
-   self-hosted instance.
-
-3. **Fail-open vs fail-closed.** The hooks fail **closed** by default — if the
+2. **Fail-open vs fail-closed.** The hooks fail **closed** by default — if the
    AgentGuards service is unreachable, actions are blocked. A user who prefers
    availability over strict enforcement can set `AGENTGUARDS_FAIL_OPEN=true`.
    Mention this only if they ask or report unexpected blocks.
 
-4. **Verify.** Run the checks in the `status` skill yourself: they prove the key
+3. **Verify.** Run the checks in the `status` skill yourself: they prove the key
    is **accepted** (HTTP 200), not just present. If it fails, the most common
    cause is `AGENTGUARDS_API_KEY` not being exported in the environment Codex
    was launched from.
 
-5. **Summarize what is now active:** prompt screening, shell-command
+4. **Summarize what is now active:** prompt screening, shell-command
    authorization (with Codex's approval prompt for anything borderline),
    scanning of content fetched by shell commands, and security scanning of
    `apply_patch` edits.
