@@ -53,7 +53,6 @@ Codex so it inherits the key on every session.
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
 | `AGENTGUARDS_API_KEY` | yes | — | Your `ag_` token. Falls back to `~/.codex/agentguards_token`, then `~/.agentguards/credentials.json` (saved by the installer). |
-| `AGENTGUARDS_URL` | no | `https://prod.agentguards.co` | Override only for a self-hosted instance. |
 | `AGENTGUARDS_FAIL_OPEN` | no | `false` | Hooks fail **closed** by default (block when the service is unreachable). Set `true` to allow on error. |
 
 ## How it works
