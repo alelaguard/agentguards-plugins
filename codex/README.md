@@ -12,14 +12,22 @@ This plugin bundles:
 
 - **enforcing hooks** — `UserPromptSubmit` input scanning, `PreToolUse`
   shell-command authorization (allow / deny / ask, with a per-session approval
-  cache), and `PostToolUse` web-content scanning of `curl`/`wget` output and
-  security scanning of `apply_patch` edits,
+  cache), and `PostToolUse` web-content scanning of `curl`/`wget` output and of
+  web-fetching MCP tools, and security scanning of `apply_patch` edits,
 - the `setup`, `status` and `guardrails` skills.
 
 There is no MCP server: the hooks enforce everything on their own, so there is
 nothing for Codex to call. (Before 0.2.18 the plugin also bundled one.) Codex's
 built-in web search runs on OpenAI's servers, so no hook sees its results;
-content fetched through shell commands is screened.
+content fetched through shell commands and MCP fetch tools is screened.
+
+**Web scan** (when web scan is enabled for your account): before a `curl`/`wget`
+command or a web-fetching MCP tool runs, every URL it will request is checked, and the
+fetch is denied if a URL carries a secret, targets a cloud metadata endpoint, uses a
+non-web scheme, or breaks your domain policy (if the check itself fails, the fetch goes
+ahead). After the fetch, instructions hidden from a human reader (HTML comments,
+invisible text, …) are removed and the rest of the page is passed on with a note; a
+page with a visible instruction aimed at the agent is withheld.
 
 The hook is a self-contained script — no build step, no native binary. On Linux
 and macOS it is Python (3.9+, already present on most systems); on Windows Codex

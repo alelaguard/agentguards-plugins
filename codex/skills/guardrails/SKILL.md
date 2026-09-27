@@ -13,12 +13,16 @@ deterministically, on every request, whatever the model does:
 
 - **`UserPromptSubmit`** screens every prompt before you see it.
 - **`PreToolUse`** authorizes every shell command before it runs: denied, or
-  allowed, or left to Codex's own approval prompt.
+  allowed, or left to Codex's own approval prompt. For a web fetch (`curl`,
+  `wget`, or a web-fetching MCP tool) it first checks the URLs, and denies a fetch
+  whose URL carries a secret or targets a blocked destination.
 - **`PermissionRequest`** rides that approval prompt: it denies what AgentGuards
   rejects and remembers what the user approved for the rest of the session.
 - **`PostToolUse`** scans the output of shell commands that fetch (`curl`,
   `wget`, `http`, `fetch`, `aria2c` — also behind `sudo`, `timeout`, `bash -c`,
-  `$(...)`), withholding or redacting it before you read it, and scans
+  `$(...)`) and of web-fetching MCP tools: instructions hidden in a page are
+  removed and you get the rest with a note; a page with a visible attack, or
+  sensitive values, is withheld or redacted before you read it. It also scans
   `apply_patch` edits for vulnerabilities and secrets.
 
 Nothing here requires you to call a tool, check a decision, or format a block
@@ -28,7 +32,8 @@ composing your own.
 
 **One limit, stated plainly:** Codex's built-in web search runs on OpenAI's
 servers, not on this machine, so no hook ever sees its results. Content fetched
-with a shell command is screened; built-in web search results are not.
+with a shell command or an MCP fetch tool is screened; built-in web search
+results are not.
 
 To check that the guardrails are on, use the `status` skill. To set the API key,
 use the `setup` skill.
