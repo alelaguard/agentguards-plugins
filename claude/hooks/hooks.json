@@ -12,7 +12,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash",
+        "matcher": "Bash|WebFetch|mcp__.+__.*(fetch|Fetch|browse|scrape|crawl|navigate|page_text|read_page|extract|web_|url|http).*",
         "hooks": [
           {
             "type": "command",
@@ -23,7 +23,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Bash|WebFetch|WebSearch|Write|Edit|MultiEdit",
+        "matcher": "Bash|WebFetch|WebSearch|Write|Edit|MultiEdit|mcp__.+__.*(fetch|Fetch|browse|scrape|crawl|navigate|page_text|read_page|extract|web_|url|http).*",
         "hooks": [
           {
             "type": "command",
