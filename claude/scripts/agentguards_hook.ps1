@@ -539,7 +539,7 @@ function Read-Event {
 $McpFetchToolPattern = 'fetch|browse|scrape|crawl|navigate|page_text|read_page|extract|web_|url|http'
 $UrlKeys = @('url', 'uri', 'href', 'link')
 $SchemePattern = '^[A-Za-z][A-Za-z0-9+.-]*://\S+'
-$BareHostPattern = '^(?:\d{1,3}(?:\.\d{1,3}){3}|\[[0-9A-Fa-f:.]+\]|localhost|[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,})(?:(?::\d+)(?:/\S*)?|/\S*)$|^(?:\d{1,3}(?:\.\d{1,3}){3}|localhost)$'
+$BareHostPattern = '^(?:\d{1,3}(?:\.\d{1,3}){3}|\[[0-9A-Fa-f:.]+\]|localhost|[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,})(?:(?::\d+)(?:[/?#]\S*)?|[/?#]\S*)$|^(?:\d{1,3}(?:\.\d{1,3}){3}|localhost)$'
 $MaxUrls = 200
 $UrlCheckTimeout = 5
 

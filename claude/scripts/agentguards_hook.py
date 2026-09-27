@@ -631,14 +631,15 @@ _MCP_FETCH_TOOL_RE = re.compile(
 # Where a URL sits in a tool's input: WebFetch uses "url"; MCP fetch servers vary.
 _URL_KEYS = ("url", "uri", "href", "link")
 # A shell word that is a URL: any scheme, any case (curl takes file://, gopher://,
-# HTTP://), or a scheme-less host curl would fetch: an IP, localhost, host:port or
-# host/path. A bare "output.txt" is not one. Words are whitespace-split, so a quoted
+# HTTP://), or a scheme-less host curl would fetch: an IP, localhost, host:port,
+# host/path or host?query ("attacker.example?d=<secret>" has no slash).
+# A bare "output.txt" is not one. Words are whitespace-split, so a quoted
 # "…?a=1&key=…" stays whole (the old regex stopped at "&" and dropped the secret).
 _SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://\S+")
 _BARE_HOST_RE = re.compile(
     r"^(?:\d{1,3}(?:\.\d{1,3}){3}|\[[0-9A-Fa-f:.]+\]|localhost"
     r"|[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,})"
-    r"(?:(?::\d+)(?:/\S*)?|/\S*)$|^(?:\d{1,3}(?:\.\d{1,3}){3}|localhost)$"
+    r"(?:(?::\d+)(?:[/?#]\S*)?|[/?#]\S*)$|^(?:\d{1,3}(?:\.\d{1,3}){3}|localhost)$"
 )
 # Every URL of a call goes to the server in ONE request (checking only the first few
 # let an attacker put the real target last). Server caps a request at 200.

