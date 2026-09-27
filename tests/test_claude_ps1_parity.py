@@ -388,3 +388,28 @@ HIDDEN = {"check_name": "web_hidden_instruction", "passed": False}
 def test_web_scan_v2_content(go_bin, api, tmp_path, route, tool, tool_input):
     api.routes["/v1/guardrails/evaluate-input"] = route
     both(go_bin, api, tmp_path, "PostToolUse", post(tool, tool_input, response="page body"))
+
+
+# updatedToolOutput in each tool's own output shape (Claude Code ignores any other
+# shape for built-in tools). Shapes from real transcripts.
+@pytest.mark.parametrize("route", [
+    (200, {"decision": "redact", "redacted_text": "CLEAN", "checks": [HIDDEN]}),
+    (200, {"decision": "block", "message": "m",
+           "checks": [{"check_name": "web_injection", "passed": False}]}),
+], ids=["strip", "withhold"])
+@pytest.mark.parametrize("tool,tool_input,response", [
+    ("Bash", {"command": "curl -s https://example.com/post"},
+     {"stdout": "PAGE", "stderr": "e", "interrupted": False, "isImage": False,
+      "noOutputExpected": False}),
+    ("WebFetch", {"url": "https://example.com/post"},
+     {"bytes": 4, "code": 200, "codeText": "OK", "result": "PAGE", "durationMs": 9,
+      "url": "https://example.com/post"}),
+    ("WebSearch", {"query": "q"},
+     {"query": "q", "results": ["PAGE", {"tool_use_id": "t", "content": [
+         {"title": "T", "url": "https://example.com"}]}], "durationSeconds": 0.5,
+      "searchCount": 1}),
+    ("mcp__fetch__fetch", {"url": "https://example.com/post"}, [{"type": "text", "text": "PAGE"}]),
+], ids=["bash", "webfetch", "websearch", "mcp-blocks"])
+def test_replacement_output_shape(go_bin, api, tmp_path, route, tool, tool_input, response):
+    api.routes["/v1/guardrails/evaluate-input"] = route
+    both(go_bin, api, tmp_path, "PostToolUse", post(tool, tool_input, response=response))

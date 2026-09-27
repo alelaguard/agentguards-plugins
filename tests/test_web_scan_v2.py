@@ -243,3 +243,45 @@ def test_no_key_leaves_the_hosts_permission_prompt_in_place(tool, tmp_path, monk
         hook.main()
     assert exit_info.value.code in (0, None)
     assert capsys.readouterr().out.strip() == ""  # no permissionDecision at all
+
+
+# --- updatedToolOutput must match the tool's own output shape ------------------------------
+# Claude Code ignores a built-in tool's replacement in any other shape and passes the
+# ORIGINAL output to the model (observed live 2026-09-27, Claude Code 2.1.283: Bash got
+# a plain string, the model read the hidden instructions). Shapes from real transcripts.
+
+_BASH = {"stdout": "PAGE", "stderr": "curl: progress", "interrupted": False,
+         "isImage": False, "noOutputExpected": False}
+_WEBFETCH = {"bytes": 4, "code": 200, "codeText": "OK", "result": "PAGE",
+             "durationMs": 9, "url": "https://example.com/post"}
+_WEBSEARCH = {"query": "q", "results": ["PAGE", {"tool_use_id": "t", "content": [
+    {"title": "T", "url": "https://example.com"}]}], "durationSeconds": 0.5, "searchCount": 1}
+_STRIP = {"decision": "redact", "redacted_text": "CLEAN",
+          "checks": [{"check_name": "web_hidden_instruction", "passed": False}]}
+_WITHHOLD = {"decision": "block", "message": "PANEL",
+             "checks": [{"check_name": "web_injection", "passed": False}]}
+
+
+@pytest.mark.parametrize("verdict,expected_text", [(_STRIP, "CLEAN"),
+                                                   (_WITHHOLD, "[AgentGuards: web content withheld]")],
+                         ids=["strip", "withhold"])
+@pytest.mark.parametrize("tool,tool_input,response,check", [
+    ("Bash", {"command": "curl -s https://example.com/post"}, _BASH,
+     lambda o, t: o == {**_BASH, "stdout": t, "stderr": ""}),
+    ("WebFetch", {"url": "https://example.com/post"}, _WEBFETCH,
+     lambda o, t: o == {**_WEBFETCH, "result": t}),
+    ("WebSearch", {"query": "q"}, _WEBSEARCH,
+     lambda o, t: o == {**_WEBSEARCH, "results": [t]}),
+    ("mcp__fetch__fetch", {"url": "https://example.com/post"}, [{"type": "text", "text": "PAGE"}],
+     lambda o, t: o == [{"type": "text", "text": t}]),
+    ("mcp__fetch__fetch", {"url": "https://example.com/post"}, "PAGE",
+     lambda o, t: o == t),
+], ids=["bash", "webfetch", "websearch", "mcp-blocks", "mcp-string"])
+def test_replacement_keeps_the_tools_output_shape(tmp_path, verdict, expected_text,
+                                                  tool, tool_input, response, check):
+    hook, _ = _hook(tmp_path, {"/v1/guardrails/evaluate-input": verdict})
+    out = json.loads(drive(hook, "handle_post_tool_use", {
+        "tool_name": tool, "tool_input": tool_input, "tool_response": response}))
+    replaced = out["hookSpecificOutput"]["updatedToolOutput"]
+    assert check(replaced, expected_text), replaced
+    assert "PAGE" not in json.dumps(replaced)
