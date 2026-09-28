@@ -14,7 +14,14 @@ This plugin bundles:
 - **enforcing hooks** — `chat.message` prompt scanning, `bash` command
   authorization (a borderline command is blocked with a reason — re-run once
   you've confirmed you want to proceed), and post-execution web-content
-  scanning/redaction for `webfetch` and `curl`/`wget`-style `bash` calls,
+  scanning/redaction for `webfetch`, `curl`/`wget`-style `bash` calls and
+  web-fetching MCP tools,
+- **web scan** (when enabled for your account): before `webfetch`, a `curl`/`wget`
+  command or a web-fetching MCP tool runs, every URL it will request is checked and the
+  fetch is blocked if a URL carries a secret, targets a cloud metadata endpoint, uses a
+  non-web scheme, or breaks your domain policy (if the check itself fails, the fetch goes
+  ahead). After the fetch, instructions hidden from a human reader are removed and the
+  rest of the page is passed on with a note; a page with a visible attack is withheld,
 - the AgentGuards security instructions (the `guardrails` skill), for
   cooperative use of the AgentGuards MCP tools.
 
