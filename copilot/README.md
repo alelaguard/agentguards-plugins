@@ -12,7 +12,14 @@ This plugin bundles:
 
 - **enforcing hooks** — `userPromptSubmitted` input scanning, `preToolUse`
   shell-command authorization (allow / deny / ask), and `postToolUse`
-  web-content scanning of `curl`/`wget` output,
+  web-content scanning of `curl`/`wget` output, the built-in `web_fetch` tool and
+  web-fetching MCP tools,
+- **web scan** (when enabled for your account): before `web_fetch`, a `curl`/`wget`
+  command or a web-fetching MCP tool runs, every URL it will request is checked and the
+  fetch is denied if a URL carries a secret, targets a cloud metadata endpoint, uses a
+  non-web scheme, or breaks your domain policy (if the check itself fails, the fetch goes
+  ahead). After the fetch, instructions hidden from a human reader are removed and the
+  rest of the page is passed on with a note; a page with a visible attack is withheld,
 - the **AgentGuards MCP server** (`check_input`, `authorize_action`,
   `validate_output`, `evaluate_policy`, `health_check`),
 - the AgentGuards security instructions (the `guardrails` skill).
