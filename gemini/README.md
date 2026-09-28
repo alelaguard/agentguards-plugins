@@ -14,8 +14,14 @@ This extension bundles:
   `validate_output`, `evaluate_policy`, `health_check`),
 - **enforcing hooks** — `BeforeAgent` input scanning, `BeforeTool` tool-call
   authorization, and `AfterTool` web-content scanning/redaction (built-in
-  `web_fetch`/`google_web_search`, and `run_shell_command` output when it
-  invokes `curl`/`wget`),
+  `web_fetch`/`google_web_search`, `run_shell_command` output when it
+  invokes `curl`/`wget`, and web-fetching MCP tools),
+- **web scan** (when enabled for your account): before `web_fetch`, a `curl`/`wget`
+  command or a web-fetching MCP tool runs, every URL it will request is checked and the
+  fetch is denied if a URL carries a secret, targets a cloud metadata endpoint, uses a
+  non-web scheme, or breaks your domain policy (if the check itself fails, the fetch goes
+  ahead). After the fetch, instructions hidden from a human reader are removed and the
+  rest of the page is passed on with a note; a page with a visible attack is withheld,
 - the AgentGuards security instructions (the `guardrails` skill).
 
 ## Install
