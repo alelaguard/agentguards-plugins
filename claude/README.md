@@ -104,4 +104,24 @@ Web fetches (since 0.2.35), when web scan is enabled for your account:
 Fetch tools from MCP servers (names containing `fetch`, `browse`, `scrape`,
 `web_`, `url` or `http`) are checked the same way.
 
+## What this plugin sends, and where
+
+Checking content means sending it to AgentGuards. The hooks send these to
+`https://prod.agentguards.co`, over HTTPS, with your API key in the
+`X-API-Key` header:
+
+| When | What is sent |
+|---|---|
+| You submit a prompt | The prompt text |
+| Before a Bash command runs | The command line |
+| Before a web fetch (WebFetch, `curl`/`wget`, MCP fetch tools) | The URL(s) |
+| After a web fetch | The fetched page or tool output |
+| After Claude writes or edits a file | The file's path and new content |
+
+Nothing is sent anywhere else, and the hooks send nothing when no API key is
+set. The hooks read your key from `AGENTGUARDS_API_KEY`, the plugin's
+**Configure** screen, or `~/.agentguards/credentials.json`, and send it only to
+AgentGuards. How the service handles and retains this data is described in the
+[privacy policy](https://agentguards.co/privacy).
+
 Learn more at https://agentguards.co.
