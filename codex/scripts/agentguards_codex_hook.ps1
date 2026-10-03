@@ -356,42 +356,6 @@ function Test-FetchCommand([string]$Command) {
     return $false
 }
 
-# Interpreters that fetch when handed a URL inline (python3 -c "requests.get(...)",
-# node -e "fetch(...)", a heredoc script); matched with any version suffix stripped.
-# Mirrors _URL_INTERPRETERS / _EMBEDDED_URL_RE.
-$UrlInterpreters = @('python', 'node', 'deno', 'bun', 'ruby', 'perl', 'php')
-$EmbeddedUrlPattern = 'https?://[^\s''"`<>(){}\[\]\\|;]+'
-
-function Get-EmbeddedUrls([string]$Command) {
-    $urls = [System.Collections.Generic.List[string]]::new()
-    if ([string]::IsNullOrEmpty($Command)) { return , $urls.ToArray() }
-    foreach ($m in [regex]::Matches($Command, $EmbeddedUrlPattern, 'IgnoreCase')) {
-        $url = $m.Value.TrimEnd([char[]]('.', ',', ':'))
-        if ($url.Length -gt ($url.IndexOf('://') + 3) -and -not $urls.Contains($url)) { $urls.Add($url) }
-    }
-    return , $urls.ToArray()
-}
-
-function Test-InterpreterFetch([string]$Command) {
-    if ((Get-EmbeddedUrls $Command).Count -eq 0) { return $false }
-    foreach ($b in (Get-CommandBinaries $Command)) {
-        if ($UrlInterpreters -ccontains ($b -creplace '[0-9.]+$', '')) { return $true }
-    }
-    return $false
-}
-
-function Test-WebCommand([string]$Command) {
-    return ((Test-FetchCommand $Command) -or (Test-InterpreterFetch $Command))
-}
-
-# URLs to check before a web command runs; an interpreter one-liner sends only its http(s) URLs.
-function Get-WebCommandUrls([string]$Command) {
-    if (Test-FetchCommand $Command) { return , (Get-CommandUrls $Command) }
-    $urls = Get-EmbeddedUrls $Command
-    if ($urls.Count -gt $MaxUrls) { return , $urls[0..($MaxUrls - 1)] }
-    return , $urls
-}
-
 # A shell command as text: a string, or an argv list joined (mirrors _command_text).
 function Get-CommandText($Value) {
     if ($Value -is [string]) { return $Value }
@@ -684,6 +648,43 @@ function Get-ToolResponseText($Evt) {
 }
 
 # --- web scan v2: pre-fetch URL check + fetch metadata (mirrors the Python hook) ----------
+
+# Interpreters that fetch when handed a URL inline (python3 -c "requests.get(...)",
+# node -e "fetch(...)", a heredoc script); matched with any version suffix stripped.
+# Mirrors _URL_INTERPRETERS / _EMBEDDED_URL_RE.
+$UrlInterpreters = @('python', 'node', 'deno', 'bun', 'ruby', 'perl', 'php')
+$EmbeddedUrlPattern = 'https?://[^\s''"`<>(){}\[\]\\|;]+'
+
+function Get-EmbeddedUrls([string]$Command) {
+    $urls = [System.Collections.Generic.List[string]]::new()
+    if ([string]::IsNullOrEmpty($Command)) { return , $urls.ToArray() }
+    foreach ($m in [regex]::Matches($Command, $EmbeddedUrlPattern, 'IgnoreCase')) {
+        $url = $m.Value.TrimEnd([char[]]('.', ',', ':'))
+        if ($url.Length -gt ($url.IndexOf('://') + 3) -and -not $urls.Contains($url)) { $urls.Add($url) }
+    }
+    return , $urls.ToArray()
+}
+
+function Test-InterpreterFetch([string]$Command) {
+    if ((Get-EmbeddedUrls $Command).Count -eq 0) { return $false }
+    foreach ($b in (Get-CommandBinaries $Command)) {
+        if ($UrlInterpreters -ccontains ($b -creplace '[0-9.]+$', '')) { return $true }
+    }
+    return $false
+}
+
+function Test-WebCommand([string]$Command) {
+    return ((Test-FetchCommand $Command) -or (Test-InterpreterFetch $Command))
+}
+
+# URLs to check before a web command runs; an interpreter one-liner sends only its http(s) URLs.
+function Get-WebCommandUrls([string]$Command) {
+    if (Test-FetchCommand $Command) { return , (Get-CommandUrls $Command) }
+    $urls = Get-EmbeddedUrls $Command
+    if ($urls.Count -gt $MaxUrls) { return , $urls[0..($MaxUrls - 1)] }
+    return , $urls
+}
+
 
 # MCP tools that fetch or read web pages, matched on the TOOL part of the name
 # (mcp__<server>__<tool>); mirrors _MCP_FETCH_TOOL_RE in the Python hook.
