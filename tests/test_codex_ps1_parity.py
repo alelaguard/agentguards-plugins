@@ -572,6 +572,12 @@ DOWNLOADS = [
     "git diff > out.txt; curl -s https://ex.com/x",
     "curl -o /dev/null https://ex.com/x",
     "curl -o missing.html https://ex.com/x",
+    # Names illegal in a Windows path: Windows PowerShell 5.1's path APIs throw on them,
+    # which once crashed the hook (exit 1, page unscanned). They must just be skipped.
+    "curl -o 'a|b?.html' https://ex.com/x",
+    "curl -s https://ex.com/x > 'out*<1>.txt'",
+    "wget -P 'd?ir' https://ex.com/doc.html",
+    "curl -sO https://ex.com/a%3F.html --output-dir 'x|y'",
 ]
 
 

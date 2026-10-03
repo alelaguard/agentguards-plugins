@@ -920,9 +920,17 @@ function Get-EventCwd($Evt) {
     return (Get-Location).ProviderPath
 }
 
+# Windows PowerShell 5.1 (.NET Framework) THROWS on characters illegal in a Windows path
+# ('?', '|', '*', '<', ...) in Combine / GetFullPath / IsPathRooted, and an uncaught
+# throw ends the hook with nothing scanned. Such a name can't be a file there anyway, so
+# these return $null (Resolve) or a plain join (Join) and the target is skipped.
+function Join-CommandPath([string]$A, [string]$B) {
+    try { return [System.IO.Path]::Combine($A, $B) } catch { return "$A/$B" }
+}
+
 function Resolve-CommandPath([string]$Cwd, [string]$Path) {
     if ($Path -ceq '~' -or $Path.StartsWith('~/')) { $Path = (Get-HomeDir) + $Path.Substring(1) }
-    $full = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($Cwd, $Path))
+    try { $full = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($Cwd, $Path)) } catch { return $null }
     # os.path.normpath drops a trailing separator; GetFullPath keeps it.
     $root = [System.IO.Path]::GetPathRoot($full)
     while ($full.Length -gt $root.Length -and ($full.EndsWith('/') -or $full.EndsWith([string][System.IO.Path]::DirectorySeparatorChar))) {
@@ -1012,8 +1020,10 @@ function Get-CurlOutputs($ArgList) {
     }
     $result = [System.Collections.Generic.List[string]]::new()
     foreach ($o in $outputs) {
-        if ($outdir.Length -eq 0 -or [System.IO.Path]::IsPathRooted($o) -or ($NotFiles -ccontains $o)) { $result.Add($o) }
-        else { $result.Add([System.IO.Path]::Combine($outdir, $o)) }
+        $rooted = $false
+        try { $rooted = [System.IO.Path]::IsPathRooted($o) } catch { }
+        if ($outdir.Length -eq 0 -or $rooted -or ($NotFiles -ccontains $o)) { $result.Add($o) }
+        else { $result.Add((Join-CommandPath $outdir $o)) }
     }
     return , $result.ToArray()
 }
@@ -1054,7 +1064,7 @@ function Get-WgetOutputs($ArgList) {
     foreach ($u in $urls) {
         $nm = Get-UrlFileName $u $true
         if ($nm.Length -eq 0) { $nm = 'index.html' }
-        if ($prefix.Length -eq 0) { $files.Add($nm) } else { $files.Add([System.IO.Path]::Combine($prefix, $nm)) }
+        if ($prefix.Length -eq 0) { $files.Add($nm) } else { $files.Add((Join-CommandPath $prefix $nm)) }
     }
     return @{ Files = $files.ToArray(); Numbered = $true }
 }
@@ -1100,6 +1110,7 @@ function Get-DownloadTargets([string]$Command, [string]$Cwd) {
                 $out = [string]$o[0]
                 if (($NotFiles -ccontains $out) -or ($out -match $RedirectPattern)) { continue }
                 $path = Resolve-CommandPath $Cwd $out
+                if ($null -eq $path) { continue }
                 $key = "$path`0$($o[1])"
                 if ($seen.Add($key)) { $found.Add(@{ Path = $path; Numbered = [bool]$o[1] }) }
             }
@@ -1300,6 +1311,7 @@ function Test-TouchesQuarantine([string]$Command, [string]$Cwd) {
     if ($Command -match '\.agentguards') { return $true }
     $homeDir = [System.IO.Path]::GetDirectoryName($script:QuarantineDir)
     $c = Resolve-CommandPath $Cwd '.'
+    if ($null -eq $c) { return $false }
     return ($c -ceq $homeDir -or $c.StartsWith($homeDir + [System.IO.Path]::DirectorySeparatorChar))
 }
 
