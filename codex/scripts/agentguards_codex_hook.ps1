@@ -356,6 +356,42 @@ function Test-FetchCommand([string]$Command) {
     return $false
 }
 
+# Interpreters that fetch when handed a URL inline (python3 -c "requests.get(...)",
+# node -e "fetch(...)", a heredoc script); matched with any version suffix stripped.
+# Mirrors _URL_INTERPRETERS / _EMBEDDED_URL_RE.
+$UrlInterpreters = @('python', 'node', 'deno', 'bun', 'ruby', 'perl', 'php')
+$EmbeddedUrlPattern = 'https?://[^\s''"`<>(){}\[\]\\|;]+'
+
+function Get-EmbeddedUrls([string]$Command) {
+    $urls = [System.Collections.Generic.List[string]]::new()
+    if ([string]::IsNullOrEmpty($Command)) { return , $urls.ToArray() }
+    foreach ($m in [regex]::Matches($Command, $EmbeddedUrlPattern, 'IgnoreCase')) {
+        $url = $m.Value.TrimEnd([char[]]('.', ',', ':'))
+        if ($url.Length -gt ($url.IndexOf('://') + 3) -and -not $urls.Contains($url)) { $urls.Add($url) }
+    }
+    return , $urls.ToArray()
+}
+
+function Test-InterpreterFetch([string]$Command) {
+    if ((Get-EmbeddedUrls $Command).Count -eq 0) { return $false }
+    foreach ($b in (Get-CommandBinaries $Command)) {
+        if ($UrlInterpreters -ccontains ($b -creplace '[0-9.]+$', '')) { return $true }
+    }
+    return $false
+}
+
+function Test-WebCommand([string]$Command) {
+    return ((Test-FetchCommand $Command) -or (Test-InterpreterFetch $Command))
+}
+
+# URLs to check before a web command runs; an interpreter one-liner sends only its http(s) URLs.
+function Get-WebCommandUrls([string]$Command) {
+    if (Test-FetchCommand $Command) { return , (Get-CommandUrls $Command) }
+    $urls = Get-EmbeddedUrls $Command
+    if ($urls.Count -gt $MaxUrls) { return , $urls[0..($MaxUrls - 1)] }
+    return , $urls
+}
+
 # A shell command as text: a string, or an argv list joined (mirrors _command_text).
 function Get-CommandText($Value) {
     if ($Value -is [string]) { return $Value }
@@ -651,7 +687,7 @@ function Get-ToolResponseText($Evt) {
 
 # MCP tools that fetch or read web pages, matched on the TOOL part of the name
 # (mcp__<server>__<tool>); mirrors _MCP_FETCH_TOOL_RE in the Python hook.
-$McpFetchToolPattern = 'fetch|browse|scrape|crawl|navigate|page_text|read_page|extract|web_|url|http'
+$McpFetchToolPattern = 'fetch|browse|scrape|crawl|navigate|page_text|read_page|extract|web_|url|http|search'
 $UrlKeys = @('url', 'uri', 'href', 'link')
 $SchemePattern = '^[A-Za-z][A-Za-z0-9+.-]*://\S+'
 $BareHostPattern = '^(?:\d{1,3}(?:\.\d{1,3}){3}|\[[0-9A-Fa-f:.]+\]|localhost|[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,})(?:(?::\d+)(?:[/?#]\S*)?|[/?#]\S*)$|^(?:\d{1,3}(?:\.\d{1,3}){3}|localhost)$'
@@ -679,6 +715,8 @@ function Get-CommandUrls([string]$Command) {
             $urls.Add($w)
         }
     }
+    # Plus http(s) URLs a word split misses: inside a JSON body or a quoted script.
+    foreach ($u in (Get-EmbeddedUrls $Command)) { if (-not $urls.Contains($u)) { $urls.Add($u) } }
     if ($urls.Count -gt $MaxUrls) { return , $urls.GetRange(0, $MaxUrls).ToArray() }
     return , $urls.ToArray()
 }
@@ -723,6 +761,265 @@ function Get-FetchMetadata($Evt) {
     $urls = Get-ToolUrls $toolInput
     if ($urls.Count -gt 0) { $meta['url'] = $urls[0] }
     return $meta
+}
+
+# --- downloaded files (mirrors the Python hook's section of the same name) -----------------
+# A web command's download targets are scanned when it finishes; a flagged file is
+# remembered for the session and any later command naming it is denied.
+
+$script:FlaggedPath = Join-Path (Join-Path (Get-HomeDir) '.codex') 'agentguards_flagged_downloads.json'
+$MaxDownloadBytes = 1024 * 1024
+$MaxDownloads = 5
+$NotFiles = @('', '-', '/dev/null', '/dev/stdout', '/dev/stderr')
+$FlaggedFileOk = @('rm', 'ls', 'stat')
+$PathTokenPattern = '[^\s''"`<>()=,;|&]+'
+
+function Get-EventCwd($Evt) {
+    $workdir = Get-Prop (Get-Prop $Evt 'tool_input') 'workdir'
+    if ($workdir -is [string] -and $workdir.Length -gt 0) { return $workdir }
+    $cwd = Get-Prop $Evt 'cwd'
+    if ($cwd -is [string] -and $cwd.Length -gt 0) { return $cwd }
+    return (Get-Location).ProviderPath
+}
+
+function Resolve-CommandPath([string]$Cwd, [string]$Path) {
+    if ($Path -ceq '~' -or $Path.StartsWith('~/')) { $Path = (Get-HomeDir) + $Path.Substring(1) }
+    return [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($Cwd, $Path))
+}
+
+# The name curl -O / wget save a URL as: its path's last segment.
+function Get-UrlFileName([string]$Url) {
+    $path = (($Url -creplace '^[A-Za-z][A-Za-z0-9+.-]*://[^/]*', '') -split '\?')[0]
+    $path = ($path -split '#')[0]
+    return ($path -split '/')[-1]
+}
+
+function Get-DownloadTargets([string]$Command, [string]$Cwd) {
+    $found = [System.Collections.Generic.List[string]]::new()
+    foreach ($segment in (Get-Segments $Command)) {
+        $tokens = @($segment.Trim() -split '\s+' | Where-Object { $_ -cne '' } | ForEach-Object { $_.Trim([char[]]@('"', "'")) })
+        $names = @($tokens | ForEach-Object { ($_ -split '/')[-1] })
+        $urls = @(Get-CommandUrls $segment | Where-Object { $_ -match '^https?://' })
+        $outputs = [System.Collections.Generic.List[string]]::new()
+        for ($i = 0; $i -lt $tokens.Count; $i++) {
+            # > file, >> file, 1> file, &> file (2> is stderr, >&2 a descriptor).
+            $m = [regex]::Match($tokens[$i], '^(?:1|&)?>>?(.*)$')
+            if ($m.Success -and -not $m.Groups[1].Value.StartsWith('&')) {
+                $target = $m.Groups[1].Value
+                if ($target -ceq '') { if (($i + 1) -lt $tokens.Count) { $target = $tokens[$i + 1] } }
+                $outputs.Add($target)
+            }
+        }
+        $tee = [array]::IndexOf($names, 'tee')
+        if ($tee -ge 0) {
+            for ($j = $tee + 1; $j -lt $tokens.Count; $j++) { if (-not $tokens[$j].StartsWith('-')) { $outputs.Add($tokens[$j]) } }
+        }
+        $curl = [array]::IndexOf($names, 'curl')
+        if ($curl -ge 0) {
+            $outdir = ''; $remote = $false
+            $curlOut = [System.Collections.Generic.List[string]]::new()
+            $j = $curl + 1
+            while ($j -lt $tokens.Count) {
+                $tok = $tokens[$j]
+                $nxt = ''
+                if (($j + 1) -lt $tokens.Count) { $nxt = $tokens[$j + 1] }
+                if ($tok -ceq '-o' -or $tok -ceq '--output') { $curlOut.Add($nxt); $j++ }
+                elseif ($tok.StartsWith('--output=')) { $curlOut.Add($tok.Substring(9)) }
+                elseif ($tok -ceq '--output-dir') { $outdir = $nxt; $j++ }
+                elseif ($tok.StartsWith('--output-dir=')) { $outdir = $tok.Substring(13) }
+                elseif ($tok -ceq '--remote-name' -or $tok -ceq '--remote-name-all') { $remote = $true }
+                elseif ($tok -cmatch '^-[A-Za-z]') {
+                    # A short-flag cluster: -sSLo page.html, -opage.html, -sLO.
+                    $cluster = $tok.Substring(1)
+                    $k = $cluster.IndexOf('o')
+                    $head = $cluster
+                    if ($k -ge 0) { $head = $cluster.Substring(0, $k) }
+                    if ($head.Contains('O')) { $remote = $true }
+                    if ($k -ge 0) {
+                        $value = $cluster.Substring($k + 1)
+                        if ($value -ceq '') { $value = $nxt; $j++ }
+                        $curlOut.Add($value)
+                    }
+                }
+                $j++
+            }
+            if ($remote) {
+                foreach ($o in $curlOut) { $outputs.Add($o) }
+                foreach ($u in $urls) {
+                    $n = Get-UrlFileName $u
+                    if ($n -cne '') { if ($outdir -ceq '') { $outputs.Add($n) } else { $outputs.Add([System.IO.Path]::Combine($outdir, $n)) } }
+                }
+            } else {
+                foreach ($o in $curlOut) {
+                    if ($outdir -cne '' -and -not [System.IO.Path]::IsPathRooted($o)) { $outputs.Add([System.IO.Path]::Combine($outdir, $o)) } else { $outputs.Add($o) }
+                }
+            }
+        }
+        $wget = [array]::IndexOf($names, 'wget')
+        if ($wget -ge 0) {
+            $prefix = ''; $document = $null
+            for ($j = $wget + 1; $j -lt $tokens.Count; $j++) {
+                $tok = $tokens[$j]
+                $nxt = ''
+                if (($j + 1) -lt $tokens.Count) { $nxt = $tokens[$j + 1] }
+                if ($tok -ceq '-O' -or $tok -ceq '--output-document') { $document = $nxt }
+                elseif ($tok.StartsWith('--output-document=')) { $document = $tok.Substring(18) }
+                elseif ($tok -cmatch '^-[A-Za-z]*O') {
+                    # -qO-, -qO page.html, -Opage.html
+                    $document = $tok.Substring($tok.IndexOf('O') + 1)
+                    if ($document -ceq '') { $document = $nxt }
+                }
+                elseif ($tok -ceq '-P' -or $tok -ceq '--directory-prefix') { $prefix = $nxt }
+                elseif ($tok.StartsWith('--directory-prefix=')) { $prefix = $tok.Substring(19) }
+            }
+            if ($null -ne $document) { $outputs.Add($document) }
+            else {
+                foreach ($u in $urls) {
+                    $n = Get-UrlFileName $u
+                    if ($n -ceq '') { $n = 'index.html' }
+                    if ($prefix -ceq '') { $outputs.Add($n) } else { $outputs.Add([System.IO.Path]::Combine($prefix, $n)) }
+                }
+            }
+        }
+        foreach ($out in $outputs) {
+            if ($NotFiles -ccontains $out) { continue }
+            $path = Resolve-CommandPath $Cwd $out
+            if (-not $found.Contains($path)) { $found.Add($path) }
+        }
+    }
+    if ($found.Count -gt $MaxDownloads) { return , $found.GetRange(0, $MaxDownloads).ToArray() }
+    return , $found.ToArray()
+}
+
+# A downloaded file's text, or '' when it is missing, not a file, or binary.
+function Read-Download([string]$Path) {
+    try {
+        if (-not [System.IO.File]::Exists($Path)) { return '' }
+        $fs = [System.IO.File]::OpenRead($Path)
+        try {
+            $buf = New-Object byte[] $MaxDownloadBytes
+            $total = 0
+            while ($total -lt $MaxDownloadBytes) {
+                $n = $fs.Read($buf, $total, $MaxDownloadBytes - $total)
+                if ($n -le 0) { break }
+                $total += $n
+            }
+        } finally { $fs.Dispose() }
+    } catch { return '' }
+    if ([array]::IndexOf($buf, [byte]0, 0, $total) -ge 0) { return '' }
+    return [System.Text.Encoding]::UTF8.GetString($buf, 0, $total)
+}
+
+# Session id -> @{ files = List[string]; ts = double }.
+function Read-Flagged {
+    $out = [System.Collections.Generic.Dictionary[string, object]]::new([System.StringComparer]::Ordinal)
+    try {
+        if (-not (Test-Path -LiteralPath $script:FlaggedPath)) { return , $out }
+        $data = [System.IO.File]::ReadAllText($script:FlaggedPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    } catch { return , $out }
+    if (-not (Test-IsObject $data)) { return , $out }
+    foreach ($p in $data.PSObject.Properties) {
+        $e = $p.Value
+        if (-not (Test-IsObject $e)) { continue }
+        $files = [System.Collections.Generic.List[string]]::new()
+        $raw = Get-Prop $e 'files'
+        if (Test-IsList $raw) { foreach ($f in $raw) { if ($f -is [string]) { $files.Add($f) } } }
+        $ts = Get-Prop $e 'ts' 0
+        if (-not (Test-IsNumber $ts)) { $ts = 0 }
+        $out[$p.Name] = @{ files = $files; ts = [double]$ts }
+    }
+    return , $out
+}
+
+function Write-Flagged($Data) {
+    $now = Get-NowSeconds
+    $obj = [ordered]@{}
+    foreach ($sid in $Data.Keys) {
+        $e = $Data[$sid]
+        if ($e.files.Count -eq 0 -or ($now - $e.ts) -ge (7 * 24 * 3600)) { continue }
+        $obj[$sid] = [ordered]@{ files = [string[]]@($e.files); ts = $e.ts }
+    }
+    try {
+        $dir = Split-Path -Parent $script:FlaggedPath
+        if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+        $json = $obj | ConvertTo-Json -Depth 20 -Compress
+        [System.IO.File]::WriteAllText($script:FlaggedPath, $json, [System.Text.UTF8Encoding]::new($false))
+    } catch { }
+}
+
+function Update-Flagged([string]$SessionId, $Add, $Remove) {
+    $data = Read-Flagged
+    $old = [System.Collections.Generic.List[string]]::new()
+    if ($data.ContainsKey($SessionId)) { $old = $data[$SessionId].files }
+    $files = [System.Collections.Generic.List[string]]::new()
+    foreach ($f in $old) { if (-not ($Remove -ccontains $f)) { $files.Add($f) } }
+    foreach ($f in $Add) { if (-not $files.Contains($f)) { $files.Add($f) } }
+    if ((@($files) -join "`0") -ceq (@($old) -join "`0") -and $files.Count -eq $old.Count) { return }
+    $data[$SessionId] = @{ files = $files; ts = (Get-NowSeconds) }
+    Write-Flagged $data
+}
+
+# Flagged downloads this command names (and that still exist).
+function Get-FlaggedInCommand($Evt, [string]$Command) {
+    $none = , ([string[]]@())
+    $sid = Get-Prop $Evt 'session_id' ''
+    if ($null -eq $sid) { $sid = '' }
+    $data = Read-Flagged
+    if (-not $data.ContainsKey([string]$sid)) { return $none }
+    $files = @($data[[string]$sid].files | Where-Object { Test-Path -LiteralPath $_ })
+    if ($files.Count -eq 0) { return $none }
+    $allOk = $true
+    foreach ($b in (Get-CommandBinaries $Command)) { if (-not ($FlaggedFileOk -ccontains $b)) { $allOk = $false } }
+    if ($allOk) { return $none }
+    $cwd = Get-EventCwd $Evt
+    # Downloading the same file again overwrites it, and that copy is scanned too.
+    $refetched = @()
+    if (Test-WebCommand $Command) { $refetched = Get-DownloadTargets $Command $cwd }
+    $named = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    foreach ($m in [regex]::Matches($Command, $PathTokenPattern)) { [void]$named.Add((Resolve-CommandPath $cwd $m.Value)) }
+    $hits = [System.Collections.Generic.List[string]]::new()
+    foreach ($f in $files) { if ($named.Contains($f) -and -not ($refetched -ccontains $f)) { $hits.Add($f) } }
+    return , $hits.ToArray()
+}
+
+# Scan the files a web command just wrote; withhold the result if any is flagged.
+function Invoke-DownloadScan($Evt, [string]$Command) {
+    $targets = Get-DownloadTargets $Command (Get-EventCwd $Evt)
+    $flaggedPaths = [System.Collections.Generic.List[string]]::new()
+    $flaggedMessages = [System.Collections.Generic.List[string]]::new()
+    $clean = [System.Collections.Generic.List[string]]::new()
+    foreach ($path in $targets) {
+        $text = Read-Download $path
+        if ($text.Trim().Length -eq 0) { continue }
+        $payload = [ordered]@{ text = $text; use_case = 'web_fetch'; channel = 'codex_hook'; metadata = (Get-FetchMetadata $Evt) }
+        try {
+            $result = Invoke-AgentGuards '/v1/guardrails/evaluate-input' $payload
+        } catch [AgentGuardsQuotaError] {
+            $flaggedPaths.Add($path); $flaggedMessages.Add("AgentGuards request quota reached: $($_.Exception.UserMessage)")
+            continue
+        } catch {
+            $err = Get-ErrorText $_
+            if (Test-FailOpen) {
+                Write-Err "AgentGuards: service unreachable ($err), allowing $path (AGENTGUARDS_FAIL_OPEN=true)"
+                continue
+            }
+            $flaggedPaths.Add($path); $flaggedMessages.Add("AgentGuards unreachable ($err) $EmDash the file was not checked (fail-closed).")
+            continue
+        }
+        $decision = Get-Decision $result
+        # Personal data alone (a byline, a maintainer's name) is not a reason to lock a file.
+        $piiOnly = ($decision -ceq 'redact') -and (Test-OnlyPiiFailed $result)
+        if ($decision -ceq 'allow' -or $piiOnly) { $clean.Add($path); continue }
+        $flaggedPaths.Add($path)
+        $flaggedMessages.Add((Get-Message $result 'message' "$Shield [AgentGuards] Web content blocked`nDecision: block`nReason: policy - flagged by AgentGuards guardrails`nSeverity: high"))
+    }
+    $sid = Get-Prop $Evt 'session_id' ''
+    if ($null -eq $sid) { $sid = '' }
+    Update-Flagged ([string]$sid) $flaggedPaths.ToArray() $clean.ToArray()
+    if ($flaggedPaths.Count -gt 0) {
+        $listing = (@($flaggedPaths) | ForEach-Object { "    $_" }) -join "`n"
+        Exit-BlockOutput "$($flaggedMessages[0])`n`nAgentGuards withheld the downloaded file(s):`n$listing`nReading them is blocked for the rest of this session. Do not try to read them another way; fetch a different source or ask the user."
+    }
 }
 
 function Test-OnlyRedactResolvableFailed($Result) {
@@ -818,11 +1115,16 @@ function Invoke-PreToolUse($Evt) {
         Exit-Continue
     }
     if ($ctx.Command.Length -eq 0) { Exit-Continue }
-    if (Test-FetchCommand $ctx.Command) {
+    $flagged = Get-FlaggedInCommand $Evt $ctx.Command
+    if ($flagged.Count -gt 0) {
+        $listing = (@($flagged) | ForEach-Object { "    $_" }) -join "`n"
+        Exit-Deny "$Shield [AgentGuards] Read of a withheld download blocked`nAgentGuards flagged this file when it was downloaded:`n$listing`nDo not try to read it another way; delete it, fetch a different source, or ask the user."
+    }
+    if (Test-WebCommand $ctx.Command) {
         # The message only: the blocked URL may itself be the secret being leaked.
         $urlTool = $toolName
         if ($urlTool.Length -eq 0) { $urlTool = 'Bash' }
-        $message = Get-UrlBlockMessage (Get-CommandUrls $ctx.Command) $urlTool
+        $message = Get-UrlBlockMessage (Get-WebCommandUrls $ctx.Command) $urlTool
         if ($null -ne $message) { Exit-Deny $message }
     }
     try {
@@ -901,7 +1203,9 @@ function Invoke-CodeScan($ToolInput) {
 
 function Invoke-PostToolUse($Evt) {
     $ctx = Get-ToolContext $Evt
-    if ((Test-McpFetchTool ([string](Get-Prop $Evt 'tool_name' ''))) -or ($ctx.Command.Length -gt 0 -and (Test-FetchCommand $ctx.Command))) {
+    $isWeb = $ctx.Command.Length -gt 0 -and (Test-WebCommand $ctx.Command)
+    if ($isWeb) { Invoke-DownloadScan $Evt $ctx.Command }
+    if ((Test-McpFetchTool ([string](Get-Prop $Evt 'tool_name' ''))) -or $isWeb) {
         Invoke-WebScan (Get-ToolResponseText $Evt) $Evt
     }
     if ((Get-Prop $Evt 'tool_name') -ceq 'apply_patch') { Invoke-CodeScan $ctx.Input }

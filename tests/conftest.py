@@ -80,6 +80,8 @@ def load_hook(name: str, tmp_path, *, env: dict[str, str] | None = None):
 
     if hasattr(module, "_APPROVALS_PATH"):
         module._APPROVALS_PATH = str(tmp_path / f"{name}-approvals.json")
+    if hasattr(module, "_FLAGGED_PATH"):
+        module._FLAGGED_PATH = str(tmp_path / f"{name}-flagged-downloads.json")
     if hasattr(module, "_api_key"):
         module._api_key = lambda: (env or {}).get("AGENTGUARDS_API_KEY", "")
     return module
