@@ -45,7 +45,9 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import ssl
+import stat
 import sys
 import time
 import urllib.error
@@ -479,10 +481,11 @@ def _is_fetch_command(command: str) -> bool:
 # Interpreters that fetch when handed a URL inline: `python3 -c "requests.get('https://…')"`,
 # `node -e "fetch('https://…')"`, a heredoc script. Codex falls back to these when its
 # built-in search is off (openai/codex#3139), and they are not fetch binaries. Matched with
-# any version suffix stripped (python3.12 -> python).
-_URL_INTERPRETERS = {"python", "node", "deno", "bun", "ruby", "perl", "php"}
+# a version and .exe suffix stripped (python3.12 -> python); `py` is the Windows launcher.
+_URL_INTERPRETERS = {"python", "py", "node", "deno", "bun", "ruby", "perl", "php"}
 # An http(s) URL anywhere in the command text, including inside a quoted script.
 _EMBEDDED_URL_RE = re.compile(r"https?://[^\s'\"`<>(){}\[\]\\|;]+", re.I)
+_HEREDOC_RE = re.compile(r"<<-?[ \t]*(['\"]?)([A-Za-z0-9_]+)\1")
 
 
 def _embedded_urls(command: str) -> list[str]:
@@ -494,10 +497,113 @@ def _embedded_urls(command: str) -> list[str]:
     return urls
 
 
-def _is_interpreter_fetch(command: str) -> bool:
-    return bool(_embedded_urls(command)) and any(
-        re.sub(r"[0-9.]+$", "", b) in _URL_INTERPRETERS for b in _command_binaries(command)
+def _statements(command: str) -> list[list[str]]:
+    """The command's top-level statements, each as its pipeline parts.
+
+    Splits on ; && || & | and newlines OUTSIDE quotes and $(...), so the `;` in
+    `python3 -c "import x; get(url)"` does not cut the script in two, and a heredoc's
+    body stays with the command that reads it.
+    """
+    s = command or ""
+    statements: list[list[str]] = []
+    parts: list[str] = []
+    cur: list[str] = []
+    quote, depth, heredocs, i, n = "", 0, [], 0, len(s)
+
+    def end_part():
+        text = "".join(cur).strip()
+        cur.clear()
+        if text:
+            parts.append(text)
+
+    def end_statement():
+        end_part()
+        if parts:
+            statements.append(parts[:])
+            parts.clear()
+
+    while i < n:
+        c = s[i]
+        if quote:
+            cur.append(c)
+            if c == "\\" and quote == '"' and i + 1 < n:
+                cur.append(s[i + 1])
+                i += 2
+                continue
+            if c == quote:
+                quote = ""
+            i += 1
+            continue
+        if c in "'\"`":
+            quote = c
+        elif c == "\\" and i + 1 < n:
+            cur.append(s[i:i + 2])
+            i += 2
+            continue
+        elif s.startswith("$(", i):
+            depth += 1
+            cur.append("$(")
+            i += 2
+            continue
+        elif c == ")" and depth:
+            depth -= 1
+        elif depth == 0:
+            m = _HEREDOC_RE.match(s, i) if s.startswith("<<", i) and not s.startswith("<<<", i) else None
+            if m:
+                heredocs.append(m.group(2))
+                cur.append(m.group(0))
+                i = m.end()
+                continue
+            if c == "\n" and heredocs:
+                # The body runs to the line that is exactly the delimiter.
+                for delim in heredocs:
+                    while i < n:
+                        j = s.find("\n", i + 1)
+                        j = n if j < 0 else j
+                        line = s[i:j]
+                        cur.append(line)
+                        i = j
+                        if line.strip() == delim:
+                            break
+                heredocs = []
+                end_statement()
+                continue
+            if s.startswith("&&", i) or s.startswith("||", i):
+                end_statement()
+                i += 2
+                continue
+            if c == "|":
+                end_part()
+                i += 1
+                continue
+            # `&` separates statements, except in redirections: 2>&1, &>file.
+            if c in ";\n" or (c == "&" and not (i and s[i - 1] in "<>") and s[i + 1:i + 2] != ">"):
+                end_statement()
+                i += 1
+                continue
+        cur.append(c)
+        i += 1
+    end_statement()
+    return statements
+
+
+def _interpreter_name(binary: str) -> str:
+    return re.sub(r"[0-9.]+$", "", re.sub(r"\.exe$", "", binary, flags=re.I))
+
+
+def _is_interpreter_part(part: str) -> bool:
+    """One pipeline part that runs an interpreter on a script containing a URL."""
+    return bool(_embedded_urls(part)) and any(
+        _interpreter_name(b) in _URL_INTERPRETERS for b in _command_binaries(part)
     )
+
+
+def _is_web_part(part: str) -> bool:
+    return _is_fetch_command(part) or _is_interpreter_part(part)
+
+
+def _is_interpreter_fetch(command: str) -> bool:
+    return any(_is_interpreter_part(p) for st in _statements(command) for p in st)
 
 
 def _is_web_command(command: str) -> bool:
@@ -506,11 +612,17 @@ def _is_web_command(command: str) -> bool:
 
 
 def _web_command_urls(command: str) -> list[str]:
-    """URLs to check before a web command runs. An interpreter one-liner sends only its
-    http(s) URLs: a `s3://` or `postgres://` word in a script is not being fetched."""
+    """URLs to check before a web command runs. An interpreter one-liner sends only the
+    http(s) URLs of its own script: a `s3://` word, or a URL in an unrelated statement,
+    is not being fetched by it."""
     if _is_fetch_command(command):
         return _command_urls(command)
-    return _embedded_urls(command)[:_MAX_URLS]
+    urls: list[str] = []
+    for statement in _statements(command):
+        for part in statement:
+            if _is_interpreter_part(part):
+                urls += [u for u in _embedded_urls(part) if u not in urls]
+    return urls[:_MAX_URLS]
 
 
 def _extract_tool_response(event: dict) -> str:
@@ -546,9 +658,11 @@ def _block_prompt(reason: str) -> None:
     sys.exit(0)
 
 
-def _block_output(reason: str) -> None:
+def _block_output(reason: str, *, context: str | None = None) -> None:
     # PostToolUse block: decision:"block" makes Codex replace the tool result
     # before the model sees it.
+    if _DOWNLOAD_NOTE and context is None:
+        reason = f"{reason}\n\n{_DOWNLOAD_NOTE}"
     print(
         json.dumps(
             {
@@ -556,7 +670,8 @@ def _block_output(reason: str) -> None:
                 "reason": reason,
                 "hookSpecificOutput": {
                     "hookEventName": "PostToolUse",
-                    "additionalContext": f"AgentGuards withheld fetched web content: {reason}",
+                    "additionalContext": context if context is not None
+                    else f"AgentGuards withheld fetched web content: {reason}",
                 },
             }
         )
@@ -582,6 +697,8 @@ def _redact_output(redacted: str, pii_types: list[str], *, hidden: bool = False,
     if other:
         notes.append(f"AgentGuards redacted sensitive values{what} from this content.")
     note = " ".join(notes + ["The rest of the result is intact and safe to use."])
+    if _DOWNLOAD_NOTE:
+        note = f"{note}\n\n{_DOWNLOAD_NOTE}"
     print(
         json.dumps(
             {
@@ -680,6 +797,9 @@ def _scan_web_output(content: str, event: dict | None = None) -> None:
 
 # MCP tools that fetch or read web pages, matched on the TOOL part of the name
 # (mcp__<server>__<tool>) so a server named "url-shortener" doesn't pull in all its tools.
+# `search` deliberately also catches search tools of non-web servers (github search_code,
+# a Slack search): their results are third-party text too. A local one such as
+# filesystem search_files costs a scan, and during an outage its result is withheld.
 _MCP_FETCH_TOOL_RE = re.compile(
     r"fetch|browse|scrape|crawl|navigate|page_text|read_page|extract|web_|url|http|search", re.I
 )
@@ -766,18 +886,50 @@ def _fetch_metadata(event: dict) -> dict:
 
 # --- downloaded files ---------------------------------------------------------------------
 # `curl -o page.html URL` prints nothing, so scanning the command's output scans nothing,
-# and a later `cat page.html` is not a fetch. So a web command's download targets are read
-# and scanned when it finishes; a flagged file is remembered for the session and any later
-# command naming it is denied (deleting or listing it is still allowed).
+# and a later `cat page.html` (or grep -r, a glob, an editor) is not a fetch. So when a web
+# command finishes, the files it wrote are scanned, and a flagged one is QUARANTINED: the
+# original moves to ~/.agentguards/quarantine/ and the file is rewritten with the cleaned
+# page (hidden instructions / secrets removed) or a withheld notice. Every later way of
+# reading it then reads the safe version. Commands that touch the quarantine are denied.
 
-_FLAGGED_PATH = str(Path.home() / ".codex" / "agentguards_flagged_downloads.json")
-_MAX_DOWNLOAD_BYTES = 1024 * 1024
+_QUARANTINE_DIR = str(Path.home() / ".agentguards" / "quarantine")
+_QUARANTINE_SHOWN = "~/.agentguards/quarantine/"
+# Read whole up to 1 MiB; a bigger file is scanned as its first and last 512 KiB — the
+# parts an agent's truncated `cat` would show — and is never written back from that.
+_DOWNLOAD_HALF = 512 * 1024
 _MAX_DOWNLOADS = 5
+# A predicted target counts only if this command wrote it: modified within this window.
+# Keeps a user's own older index.html from being scanned (and replaced) in place of the
+# index.html.1 wget actually wrote.
+_FRESH_SECONDS = 120
 _NOT_FILES = {"", "-", "/dev/null", "/dev/stdout", "/dev/stderr"}
-# Commands that may name a flagged file without reading it.
-_FLAGGED_FILE_OK = {"rm", "ls", "stat"}
-# A path-like run of characters: what a script or command line names a file with.
-_PATH_TOKEN_RE = re.compile(r"[^\s'\"`<>()=,;|&]+")
+# Formats with no text worth scanning; checked only when the bytes are not mostly text.
+_BINARY_MAGIC = (b"\x1f\x8b", b"PK\x03\x04", b"\xfd7zXZ\x00", b"BZh", b"\x28\xb5\x2f\xfd",
+                 b"7z\xbc\xaf\x27\x1c", b"\x89PNG", b"\xff\xd8\xff", b"GIF8", b"\x7fELF",
+                 b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"\x00asm", b"MZ")
+# Personal data alone (a byline, a maintainer's name) does not quarantine a download.
+_PERSONAL_DATA_CHECKS = {"presidio", "pii_detection"}
+_REDIRECT_RE = re.compile(r"^(?:1|&)?>>?(.*)$")
+# curl/wget short options that take a value: `-XPOST` is -X POST, not -O.
+_CURL_SHORT_VALUE = set("AbcCdDeEFHKmoPQrtTuUwxXyYz")
+_CURL_LONG_VALUE = {
+    "--header", "--data", "--data-raw", "--data-binary", "--data-urlencode", "--data-ascii",
+    "--json", "--form", "--form-string", "--referer", "--user", "--proxy", "--user-agent",
+    "--cookie", "--cookie-jar", "--request", "--write-out", "--max-time", "--connect-timeout",
+    "--retry", "--range", "--upload-file", "--config", "--cert", "--key", "--cacert",
+    "--resolve", "--connect-to", "--interface", "--limit-rate", "--max-filesize",
+    "--proxy-user", "--oauth2-bearer", "--unix-socket", "--dump-header", "--trace",
+    "--trace-ascii", "--stderr", "--variable", "--expand-url",
+}
+_WGET_SHORT_VALUE = set("OoaiPeUtTwQlARDXIBY")
+_WGET_LONG_VALUE = {
+    "--header", "--user-agent", "--referer", "--post-data", "--post-file", "--output-file",
+    "--append-output", "--input-file", "--execute", "--tries", "--timeout", "--wait",
+    "--user", "--password", "--level", "--accept", "--reject", "--domains",
+    "--exclude-directories", "--include-directories", "--base", "--bind-address",
+    "--load-cookies", "--save-cookies", "--method", "--body-data", "--body-file",
+    "--ca-certificate", "--certificate", "--private-key",
+}
 
 
 def _event_cwd(event: dict) -> str:
@@ -795,163 +947,271 @@ def _resolve_path(cwd: str, path: str) -> str:
     return os.path.normpath(os.path.join(cwd, path))
 
 
-def _url_file_name(url: str) -> str:
-    """The name curl -O / wget save a URL as: its path's last segment."""
-    path = re.sub(r"^[A-Za-z][A-Za-z0-9+.-]*://[^/]*", "", url).split("?")[0].split("#")[0]
-    return path.rsplit("/", 1)[-1]
+def _words(text: str) -> list[str]:
+    """Shell words with quotes removed: `-H "Accept: x"` is two words, not three."""
+    words: list[str] = []
+    cur: list[str] = []
+    quote, has = "", False
+    for c in text:
+        if quote:
+            if c == quote:
+                quote = ""
+            else:
+                cur.append(c)
+        elif c in "'\"":
+            quote, has = c, True
+        elif c.isspace():
+            if cur or has:
+                words.append("".join(cur))
+            cur, has = [], False
+        else:
+            cur.append(c)
+    if cur or has:
+        words.append("".join(cur))
+    return words
 
 
-def _download_targets(command: str, cwd: str) -> list[str]:
-    """Files a web command writes fetched content to: curl -o/-O/--output-dir, wget's
-    -O/-P or default name, shell redirection and tee. Absolute, at most _MAX_DOWNLOADS."""
-    found: list[str] = []
-    for segment in _segments(command):
-        tokens = [t.strip("\"'") for t in segment.split()]
-        names = [t.split("/")[-1] for t in tokens]
-        urls = [u for u in _command_urls(segment) if re.match(r"^https?://", u, re.I)]
-        outputs: list[str] = []
-        for i, tok in enumerate(tokens):
-            # > file, >> file, 1> file, &> file (2> is stderr, >&2 a descriptor).
-            m = re.fullmatch(r"(?:1|&)?>>?(.*)", tok)
-            if m and not m.group(1).startswith("&"):
-                outputs.append(m.group(1) or (tokens[i + 1] if i + 1 < len(tokens) else ""))
-        if "tee" in names:
-            outputs += [t for t in tokens[names.index("tee") + 1:] if not t.startswith("-")]
-        if "curl" in names:
-            outdir, remote, curl_out = "", False, []
-            args = tokens[names.index("curl") + 1:]
-            j = 0
-            while j < len(args):
-                tok, nxt = args[j], (args[j + 1] if j + 1 < len(args) else "")
-                if tok in ("-o", "--output"):
-                    curl_out.append(nxt)
-                    j += 1
-                elif tok.startswith("--output="):
-                    curl_out.append(tok.split("=", 1)[1])
-                elif tok == "--output-dir":
-                    outdir = nxt
-                    j += 1
-                elif tok.startswith("--output-dir="):
-                    outdir = tok.split("=", 1)[1]
-                elif tok in ("--remote-name", "--remote-name-all"):
-                    remote = True
-                elif re.match(r"^-[A-Za-z]", tok):
-                    # A short-flag cluster: -sSLo page.html, -opage.html, -sLO.
-                    cluster = tok[1:]
-                    k = cluster.find("o")
-                    if "O" in (cluster if k < 0 else cluster[:k]):
-                        remote = True
-                    if k >= 0:
-                        value = cluster[k + 1:]
-                        if not value:
-                            value = nxt
-                            j += 1
-                        curl_out.append(value)
+def _is_download_url(word: str) -> bool:
+    return bool(re.match(r"^https?://", word, re.I) or _BARE_HOST_RE.match(word))
+
+
+def _url_file_name(url: str, keep_query: bool) -> str:
+    """The name curl -O (no query) or wget (query kept) saves a URL as."""
+    rest = re.sub(r"^[A-Za-z][A-Za-z0-9+.-]*://", "", url).split("#")[0]
+    path, _, query = rest.partition("?")
+    name = path.split("/", 1)[1].rsplit("/", 1)[-1] if "/" in path else ""
+    if keep_query and query:
+        name = (name or "index.html") + "?" + query
+    return name
+
+
+def _curl_outputs(args: list[str]) -> list[str]:
+    outputs: list[str] = []
+    urls: list[str] = []
+    outdir, remote, j = "", False, 0
+    while j < len(args):
+        tok, nxt = args[j], (args[j + 1] if j + 1 < len(args) else "")
+        if tok in ("-o", "--output"):
+            outputs.append(nxt)
+            j += 1
+        elif tok.startswith("--output="):
+            outputs.append(tok.split("=", 1)[1])
+        elif tok == "--output-dir":
+            outdir = nxt
+            j += 1
+        elif tok.startswith("--output-dir="):
+            outdir = tok.split("=", 1)[1]
+        elif tok in ("--remote-name", "--remote-name-all"):
+            remote = True
+        elif tok == "--url":
+            urls.append(nxt)
+            j += 1
+        elif tok.startswith("--url="):
+            urls.append(tok.split("=", 1)[1])
+        elif tok.startswith("--"):
+            if "=" not in tok and tok in _CURL_LONG_VALUE:
                 j += 1
-            if remote:
-                outputs += curl_out + [os.path.join(outdir, n) for n in map(_url_file_name, urls) if n]
+        elif re.match(r"^-[A-Za-z]", tok):
+            # A short-flag cluster: -sSLo page.html, -opage.html, -sLO, -XPOST.
+            for k, ch in enumerate(tok[1:], 1):
+                if ch == "O":
+                    remote = True
+                elif ch in _CURL_SHORT_VALUE:
+                    value = tok[k + 1:]
+                    if not value:
+                        value = nxt
+                        j += 1
+                    if ch == "o":
+                        outputs.append(value)
+                    break
+        elif _is_download_url(tok):
+            urls.append(tok)
+        j += 1
+    if remote:
+        outputs += [n for n in (_url_file_name(u, False) for u in urls) if n]
+    # curl applies --output-dir to -o names as well as -O ones.
+    return [o if not outdir or os.path.isabs(o) or o in _NOT_FILES else os.path.join(outdir, o)
+            for o in outputs]
+
+
+def _wget_outputs(args: list[str]) -> tuple[list[str], bool]:
+    """wget's output files, and whether they are default names (wget then writes name.1,
+    name.2 ... when the name is taken)."""
+    urls: list[str] = []
+    prefix, document, j = "", None, 0
+    while j < len(args):
+        tok, nxt = args[j], (args[j + 1] if j + 1 < len(args) else "")
+        if tok in ("--output-document", "--directory-prefix"):
+            if tok == "--output-document":
+                document = nxt
             else:
-                outputs += [p if os.path.isabs(p) else os.path.join(outdir, p) for p in curl_out]
-        if "wget" in names:
-            prefix, document = "", None
-            args = tokens[names.index("wget") + 1:]
-            for j, tok in enumerate(args):
-                nxt = args[j + 1] if j + 1 < len(args) else ""
-                if tok in ("-O", "--output-document"):
-                    document = nxt
-                elif tok.startswith("--output-document="):
-                    document = tok.split("=", 1)[1]
-                elif re.match(r"^-[A-Za-z]*O", tok):  # -qO-, -qO page.html, -Opage.html
-                    document = tok[tok.index("O") + 1:] or nxt
-                elif tok in ("-P", "--directory-prefix"):
-                    prefix = nxt
-                elif tok.startswith("--directory-prefix="):
-                    prefix = tok.split("=", 1)[1]
-            if document is not None:
-                outputs.append(document)
-            else:
-                outputs += [os.path.join(prefix, _url_file_name(u) or "index.html") for u in urls]
-        for out in outputs:
-            if out in _NOT_FILES:
-                continue
-            path = _resolve_path(cwd, out)
-            if path not in found:
-                found.append(path)
-    return found[:_MAX_DOWNLOADS]
+                prefix = nxt
+            j += 1
+        elif tok.startswith("--output-document="):
+            document = tok.split("=", 1)[1]
+        elif tok.startswith("--directory-prefix="):
+            prefix = tok.split("=", 1)[1]
+        elif tok.startswith("--"):
+            if "=" not in tok and tok in _WGET_LONG_VALUE:
+                j += 1
+        elif re.match(r"^-[A-Za-z]", tok):
+            for k, ch in enumerate(tok[1:], 1):
+                if ch in _WGET_SHORT_VALUE:
+                    value = tok[k + 1:]
+                    if not value:
+                        value = nxt
+                        j += 1
+                    if ch == "O":
+                        document = value
+                    elif ch == "P":
+                        prefix = value
+                    break
+        elif _is_download_url(tok):
+            urls.append(tok)
+        j += 1
+    if document is not None:
+        return [document], False
+    return [os.path.join(prefix, _url_file_name(u, True) or "index.html") for u in urls], True
 
 
-def _read_download(path: str) -> str:
-    """A downloaded file's text, or "" when it is missing, not a file, or binary."""
-    try:
-        if not os.path.isfile(path):
-            return ""
-        with open(path, "rb") as fh:
-            data = fh.read(_MAX_DOWNLOAD_BYTES)
-    except OSError:
-        return ""
-    if b"\0" in data:
-        return ""
-    return data.decode("utf-8", "replace")
+def _download_targets(command: str, cwd: str) -> list[tuple[str, bool]]:
+    """(path, numbered) for each file the fetching statements of *command* may write:
+    curl -o/-O/--output-dir, wget -O/-P/default names, and > / >> / tee anywhere in the
+    fetching statement's pipeline. Other statements (`git diff > x.patch; curl …`) and
+    heredoc bodies are not looked at."""
+    found: list[tuple[str, bool]] = []
+    for statement in _statements(command):
+        if not any(_is_web_part(p) for p in statement):
+            continue
+        for part in statement:
+            words = _words(part.split("\n", 1)[0])
+            names = [w.split("/")[-1] for w in words]
+            outputs: list[tuple[str, bool]] = []
+            for i, word in enumerate(words):
+                m = _REDIRECT_RE.match(word)
+                if m and not m.group(1).startswith("&"):
+                    outputs.append((m.group(1) or (words[i + 1] if i + 1 < len(words) else ""), False))
+            binaries = _command_binaries(part)
+            if "tee" in binaries and "tee" in names:
+                outputs += [(w, False) for w in words[names.index("tee") + 1:] if not w.startswith("-")]
+            if "curl" in binaries and "curl" in names:
+                outputs += [(o, False) for o in _curl_outputs(words[names.index("curl") + 1:])]
+            if "wget" in binaries and "wget" in names:
+                files, numbered = _wget_outputs(words[names.index("wget") + 1:])
+                outputs += [(f, numbered) for f in files]
+            for out, numbered in outputs:
+                if out in _NOT_FILES or _REDIRECT_RE.match(out):
+                    continue
+                entry = (_resolve_path(cwd, out), numbered)
+                if entry not in found:
+                    found.append(entry)
+    return found
 
 
-def _load_flagged() -> dict:
-    try:
-        with open(_FLAGGED_PATH) as fh:
-            data = json.load(fh)
-    except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def _write_flagged(data: dict) -> None:
+def _written_downloads(command: str, cwd: str) -> list[str]:
+    """The files the command actually wrote: an existing regular file, modified in the last
+    _FRESH_SECONDS; for a wget default name the newest of name, name.1, name.2 ..."""
     now = time.time()
-    data = {
-        sid: e for sid, e in data.items()
-        if isinstance(e, dict) and isinstance(e.get("files"), list) and e["files"]
-        and now - e.get("ts", 0) < _SESSION_TTL
-    }
+    written: list[str] = []
+    for path, numbered in _download_targets(command, cwd):
+        candidates = [path]
+        if numbered:
+            folder, base = os.path.split(path)
+            try:
+                entries = sorted(os.listdir(folder or "."))
+            except OSError:
+                entries = []
+            candidates += [os.path.join(folder, e) for e in entries
+                           if re.fullmatch(re.escape(base) + r"\.\d+", e)]
+        fresh = []
+        for candidate in candidates:
+            try:
+                st = os.stat(candidate)
+            except OSError:
+                continue
+            if stat.S_ISREG(st.st_mode) and st.st_mtime >= now - _FRESH_SECONDS:
+                fresh.append((st.st_mtime, candidate))
+        if fresh:
+            newest = max(fresh)[1]
+            if newest not in written:
+                written.append(newest)
+    return written[:_MAX_DOWNLOADS]
+
+
+def _download_text(path: str) -> tuple[str, bool]:
+    """(text to scan, whole): whole is False when the text is not the file verbatim —
+    head+tail of a big file, UTF-16, or text pulled out of binary — so it is never
+    written back. ("", False) for a real binary format or an unreadable file."""
     try:
-        os.makedirs(os.path.dirname(_FLAGGED_PATH), exist_ok=True)
-        fd = os.open(_FLAGGED_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as fh:
-            json.dump(data, fh)
+        with open(path, "rb") as fh:
+            size = os.fstat(fh.fileno()).st_size
+            if size <= 2 * _DOWNLOAD_HALF:
+                data, whole = fh.read(), True
+            else:
+                head = fh.read(_DOWNLOAD_HALF)
+                fh.seek(size - _DOWNLOAD_HALF)
+                data, whole = head + b"\n" + fh.read(_DOWNLOAD_HALF), False
+    except OSError:
+        return "", False
+    if data.startswith(b"\xff\xfe") or data.startswith(b"\xfe\xff"):
+        return data.decode("utf-16", "replace"), False
+    sample = data[:65536]
+    texty = sum(1 for b in sample if 32 <= b < 127 or b in (9, 10, 13)) >= 0.9 * len(sample)
+    if data.startswith(_BINARY_MAGIC) and not texty:
+        return "", False
+    if b"\0" in data:
+        # One NUL byte must not hide a page from the scan: scan its printable text
+        # (NULs dropped first, so UTF-16 without a BOM reads as text too).
+        runs = re.findall(rb"[\x20-\x7e\t\r\n]{4,}", data.replace(b"\0", b""))
+        return b"\n".join(runs).decode("ascii"), False
+    return data.decode("utf-8", "replace"), whole
+
+
+def _quarantine(path: str, replacement) -> str:
+    """Move *path* into the quarantine and write replacement(name) in its place, where
+    name is the quarantined copy's file name (content hash + original name)."""
+    digest = hashlib.sha256()
+    try:
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(65536), b""):
+                digest.update(chunk)
     except OSError:
         pass
+    name = f"{digest.hexdigest()[:12]}-{os.path.basename(path)}"
+    try:
+        os.makedirs(_QUARANTINE_DIR, mode=0o700, exist_ok=True)
+        shutil.move(path, os.path.join(_QUARANTINE_DIR, name))
+    except OSError:
+        pass  # Could not keep a copy: the page is still replaced below.
+    try:
+        with open(path, "w", encoding="utf-8", newline="") as fh:
+            fh.write(replacement(name))
+    except OSError:
+        pass
+    return name
 
 
-def _update_flagged(session_id: str, add: list[str], remove: list[str]) -> None:
-    data = _load_flagged()
-    entry = data.get(session_id) or {}
-    files = [f for f in entry.get("files") or [] if isinstance(f, str) and f not in remove]
-    files += [f for f in add if f not in files]
-    if files == (entry.get("files") or []):
-        return
-    data[session_id] = {"files": files, "ts": time.time()}
-    _write_flagged(data)
+def _withheld_notice(reason: str):
+    return lambda name: (
+        "[AgentGuards withheld this downloaded file]\n"
+        f"{reason}\n"
+        f"The original is in {_QUARANTINE_SHOWN}{name} for the user to review; "
+        "agents cannot read it.\n"
+    )
 
 
-def _flagged_in_command(event: dict, command: str) -> list[str]:
-    """Flagged downloads this command names (and that still exist)."""
-    files = [f for f in (_load_flagged().get(event.get("session_id", "")) or {}).get("files") or []
-             if isinstance(f, str) and os.path.exists(f)]
-    if not files:
-        return []
-    if all(b in _FLAGGED_FILE_OK for b in _command_binaries(command)):
-        return []
-    cwd = _event_cwd(event)
-    # Downloading the same file again overwrites it, and that copy is scanned too.
-    refetched = _download_targets(command, cwd) if _is_web_command(command) else []
-    named = {_resolve_path(cwd, t) for t in _PATH_TOKEN_RE.findall(command)}
-    return [f for f in files if f in named and f not in refetched]
+# Set by _scan_downloads when it cleaned a download; carried into whatever the PostToolUse
+# hook says next, so the model learns the file changed.
+_DOWNLOAD_NOTE = ""
 
 
 def _scan_downloads(event: dict, command: str) -> None:
-    """Scan the files a web command just wrote; withhold the result if any is flagged."""
-    targets = _download_targets(command, _event_cwd(event))
-    flagged: list[tuple[str, str]] = []
-    clean: list[str] = []
-    for path in targets:
-        text = _read_download(path)
+    """Scan the files a web command just wrote; quarantine a flagged one."""
+    global _DOWNLOAD_NOTE
+    withheld: list[tuple[str, str]] = []
+    cleaned: list[str] = []
+    for path in _written_downloads(command, _event_cwd(event)):
+        text, whole = _download_text(path)
         if not text.strip():
             continue
         payload = {"text": text, "use_case": "web_fetch", "channel": "codex_hook",
@@ -959,30 +1219,52 @@ def _scan_downloads(event: dict, command: str) -> None:
         try:
             result = _post("/v1/guardrails/evaluate-input", payload)
         except QuotaExceededError as exc:
-            flagged.append((path, f"AgentGuards request quota reached: {exc.user_message}"))
-            continue
+            reason = f"AgentGuards request quota reached: {exc.user_message} The file was not checked."
         except Exception as exc:
             if _fail_open():
                 print(f"AgentGuards: service unreachable ({exc}), allowing {path} (AGENTGUARDS_FAIL_OPEN=true)", file=sys.stderr)
                 continue
-            flagged.append((path, f"AgentGuards unreachable ({exc}) — the file was not checked (fail-closed)."))
-            continue
-        decision = result.get("decision", "allow")
-        failing = [c for c in result.get("checks") or [] if not c.get("passed", True)]
-        # Personal data alone (a byline, a maintainer's name) is not a reason to lock a file.
-        pii_only = decision == "redact" and failing and all(c.get("check_name") in _PII_CHECKS for c in failing)
-        if decision == "allow" or pii_only:
-            clean.append(path)
-            continue
-        # Never the page's own text: see the flagged_input note in _scan_web_output.
-        flagged.append((path, result.get("message") or "🛡️ [AgentGuards] Web content blocked\nDecision: block\nReason: policy - flagged by AgentGuards guardrails\nSeverity: high"))
-    session_id = event.get("session_id", "")
-    _update_flagged(session_id, [p for p, _ in flagged], clean)
-    if flagged:
-        listing = "\n".join(f"    {p}" for p, _ in flagged)
-        _block_output(f"{flagged[0][1]}\n\nAgentGuards withheld the downloaded file(s):\n{listing}\n"
-                      "Reading them is blocked for the rest of this session. Do not try to read "
-                      "them another way; fetch a different source or ask the user.")
+            reason = f"AgentGuards unreachable ({exc}) — the file was not checked (fail-closed)."
+        else:
+            decision = result.get("decision", "allow")
+            failing = [c for c in result.get("checks") or [] if not c.get("passed", True)]
+            if decision == "allow" or (decision == "redact" and failing and all(
+                    c.get("check_name") in _PERSONAL_DATA_CHECKS for c in failing)):
+                continue
+            redacted = result.get("redacted_text")
+            if (decision == "redact" and whole and isinstance(redacted, str) and redacted.strip()
+                    and _only_redact_resolvable_failed(result)):
+                _quarantine(path, lambda _name, text=redacted: text)
+                cleaned.append(path)
+                continue
+            # Never the page's own text: see the flagged_input note in _scan_web_output.
+            reason = result.get("message") or "🛡️ [AgentGuards] Web content blocked\nDecision: block\nReason: policy - flagged by AgentGuards guardrails\nSeverity: high"
+        _quarantine(path, _withheld_notice(reason))
+        withheld.append((path, reason))
+    notes = []
+    if cleaned:
+        notes.append("AgentGuards removed hidden instructions or sensitive values from the downloaded "
+                     "file(s) below; they now hold the cleaned content, and the originals are in "
+                     f"{_QUARANTINE_SHOWN} for the user to review:\n"
+                     + "\n".join(f"    {p}" for p in cleaned))
+    if withheld:
+        notes.insert(0, f"{withheld[0][1]}\n\nAgentGuards withheld the downloaded file(s) below and "
+                     "replaced their contents with a notice; the originals are in "
+                     f"{_QUARANTINE_SHOWN} for the user to review. Do not try to read them; fetch "
+                     "a different source or ask the user.\n"
+                     + "\n".join(f"    {p}" for p, _ in withheld))
+        _block_output("\n\n".join(notes))
+    _DOWNLOAD_NOTE = "\n\n".join(notes)
+
+
+def _touches_quarantine(command: str, cwd: str) -> bool:
+    """Whether a command reaches into the quarantine (by path, or from inside it)."""
+    if not re.search(r"quarantine", command, re.I):
+        return False
+    home_dir = os.path.dirname(_QUARANTINE_DIR)
+    cwd = os.path.normpath(cwd)
+    return bool(re.search(r"\.agentguards", command, re.I)) or \
+        cwd == home_dir or cwd.startswith(home_dir + os.sep)
 
 
 def _ask(reason: str) -> None:
@@ -1092,12 +1374,10 @@ def handle_pre_tool_use(event: dict) -> None:
         _continue()
     if not command:
         _continue()
-    flagged = _flagged_in_command(event, command)
-    if flagged:
-        listing = "\n".join(f"    {p}" for p in flagged)
-        _deny("🛡️ [AgentGuards] Read of a withheld download blocked\n"
-              f"AgentGuards flagged this file when it was downloaded:\n{listing}\n"
-              "Do not try to read it another way; delete it, fetch a different source, or ask the user.")
+    if _touches_quarantine(command, _event_cwd(event)):
+        _deny("🛡️ [AgentGuards] Quarantined download — access blocked\n"
+              f"Files in {_QUARANTINE_SHOWN} are downloads AgentGuards withheld; only the user "
+              "may open them. Fetch a different source or ask the user.")
     if _is_web_command(command):
         # The message only: the blocked URL may itself be the secret being leaked.
         message = _url_block_message(_web_command_urls(command), tool_name or "Bash")
@@ -1253,7 +1533,14 @@ def handle_post_tool_use(event: dict) -> None:
     if command and _is_web_command(command):
         _scan_downloads(event, command)
     if _is_mcp_fetch_tool(tool_name) or (command and _is_web_command(command)):
-        _scan_web_output(_extract_tool_response(event), event)
+        output = _extract_tool_response(event)
+        _scan_web_output(output, event)
+        if _DOWNLOAD_NOTE:
+            # The output itself was clean, but a download was cleaned: the only channel
+            # Codex honours is decision:"block", whose reason replaces the result, so the
+            # output travels in it with the note.
+            _block_output(f"{output}\n\n[{_DOWNLOAD_NOTE}]" if output.strip() else _DOWNLOAD_NOTE,
+                          context=_DOWNLOAD_NOTE)
     # Scan file edits for SAST findings and secrets.
     if tool_name in _WRITE_TOOL_NAMES:
         _scan_code(tool_input)

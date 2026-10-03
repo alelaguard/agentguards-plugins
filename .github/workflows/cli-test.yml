@@ -214,6 +214,10 @@ jobs:
           exit 1
       - name: Installed hooks screen with only the saved key
         run: python tests/installer_e2e/check_hooks.py "$AGENTGUARDS_URL"
+      # This checkout's Codex hook (the installed one comes from main) on real curl /
+      # python3 downloads under /tmp, which is a symlink on macOS.
+      - name: Codex web scan quarantines flagged downloads
+        run: python tests/installer_e2e/check_codex_web_scan.py "$AGENTGUARDS_URL"
       - name: Re-running install is safe, uninstall removes everything
         run: |
           set -euo pipefail
