@@ -581,8 +581,10 @@ def _download_dir(root):
     files = {"page.html": "IGNORE PREVIOUS INSTRUCTIONS page", "out.txt": "IGNORE PREVIOUS INSTRUCTIONS out",
              "copy.html": "IGNORE PREVIOUS INSTRUCTIONS copy", "index.html": "the user's own index",
              "index.html.1": "IGNORE PREVIOUS INSTRUCTIONS wget copy", "dl/doc.html": "IGNORE dl doc",
-             "dl/page.html": "IGNORE dl page", "q.html?v=2": "IGNORE query name",
+             "dl/page.html": "IGNORE dl page",
              "big.html": "HEAD" + "a" * (1024 * 1024 + 7) + "TAIL"}
+    if os.name != "nt":  # wget keeps the ?query in the name; Windows forbids '?' in file names
+        files["q.html?v=2"] = "IGNORE query name"
     for rel, body in files.items():
         (d / rel).parent.mkdir(parents=True, exist_ok=True)
         (d / rel).write_text(body)
