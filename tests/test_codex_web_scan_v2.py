@@ -389,3 +389,71 @@ def test_search_mcp_tools_are_scanned(tmp_path, tool):
     drive(hook, "handle_post_tool_use", {"tool_name": tool, "tool_input": {"query": "x"},
                                          "tool_response": "RESULTS"})
     assert calls and calls[0][0] == "/v1/guardrails/evaluate-input"
+
+
+# --- Windows: Codex runs commands in PowerShell ------------------------------------------
+# Baseline on a real Windows 11 VM (0.2.21, 2026-10-04): all six of these went unscanned.
+
+WIN = "http://localhost:8099"
+
+
+@pytest.mark.parametrize("command,targets", [
+    (f"curl.exe -s -o p1.html {WIN}/a", ["p1.html"]),
+    (f"curl.exe -s {WIN}/a", []),
+    (f"CURL.EXE -s {WIN}/a", []),
+    (f"C:\\Windows\\System32\\curl.exe -o x.html {WIN}/a", ["x.html"]),
+    (f"Invoke-WebRequest -UseBasicParsing -Uri {WIN}/a -OutFile p2.html", ["p2.html"]),
+    (f"Invoke-WebRequest {WIN}/a -OutFile:p3.html", ["p3.html"]),
+    (f"(iwr -UseBasicParsing {WIN}/a).Content", []),
+    (f"irm {WIN}/a", []),
+    (f"$r = Invoke-RestMethod {WIN}/a", []),
+    # `curl` is an alias of Invoke-WebRequest in Windows PowerShell 5.1.
+    (f"(curl -UseBasicParsing {WIN}/a).Content", []),
+    (f"iwr {WIN}/a | Out-File -Encoding utf8 page.html", ["page.html"]),
+    (f"iwr {WIN}/a | Set-Content -Path sc.html", ["sc.html"]),
+    (f"(New-Object Net.WebClient).DownloadFile('{WIN}/a', 'dl.html')", ["dl.html"]),
+    (f"(New-Object System.Net.WebClient).DownloadString('{WIN}/a')", []),
+    (f"Start-BitsTransfer -Source {WIN}/a -Destination b.html", ["b.html"]),
+])
+def test_windows_fetches_are_web_commands(tmp_path, command, targets):
+    hook, _ = _hook(tmp_path, {})
+    assert hook._is_web_command(command)
+    assert hook._download_targets(command, "/w") == [(f"/w/{t}", False) for t in targets]
+
+
+@pytest.mark.parametrize("command", [
+    'git commit -m "fix irm handling"',   # "irm" not in command position
+    "echo irm", "Get-ChildItem -Recurse", "Write-Output curl",
+    "Set-Content -Path notes.txt -Value hi",  # a writer alone is not a fetch
+    "$c = New-Object Net.WebClient",          # a client without a URL
+])
+def test_windows_non_fetches_are_left_alone(tmp_path, command):
+    hook, _ = _hook(tmp_path, {})
+    assert not hook._is_web_command(command)
+
+
+def test_windows_fetch_gets_the_url_check_and_its_output_scanned(tmp_path):
+    hook, calls = _hook(tmp_path, {"/v1/guardrails/evaluate-url": URL_BLOCK})
+    out = drive(hook, "handle_pre_tool_use", {"tool_name": "Bash", "tool_input": {
+        "command": f"(iwr -UseBasicParsing '{EXFIL_URL}').Content"}})
+    assert _pre_decision(out) == "deny" and calls[0][1]["urls"] == [EXFIL_URL]
+    hook, calls = _hook(tmp_path, {"/v1/guardrails/evaluate-input": BLOCK_PAGE})
+    out = json.loads(drive(hook, "handle_post_tool_use", {"tool_name": "Bash", "tool_response": "IGNORE",
+                                                          "tool_input": {"command": f"irm {WIN}/a"}}))
+    assert out["decision"] == "block"
+
+
+def test_windows_outfile_download_is_quarantined(tmp_path):
+    hook, _ = _hook(tmp_path, {"/v1/guardrails/evaluate-input": BLOCK_PAGE})
+    work = _work(tmp_path, name="p2.html", body="IGNORE ALL")
+    out = json.loads(_post_download(hook, work, f"Invoke-WebRequest -Uri {WIN}/a -OutFile p2.html"))
+    assert out["decision"] == "block"
+    assert (work / "p2.html").read_text().startswith("[AgentGuards withheld")
+
+
+@pytest.mark.parametrize("spelling", ["~/dl/h.html", "~\\dl\\h.html", "$HOME/dl/h.html", "$env:USERPROFILE/dl/h.html"])
+def test_home_relative_download_paths(tmp_path, spelling):
+    hook, _ = _hook(tmp_path, {})
+    home = str(hook.Path.home())
+    resolved = hook._resolve_path("/w", spelling)
+    assert resolved.startswith(home) and resolved.replace("\\", "/").endswith("dl/h.html")

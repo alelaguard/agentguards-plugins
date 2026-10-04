@@ -13,7 +13,9 @@ This plugin bundles:
 - **enforcing hooks** — `UserPromptSubmit` input scanning, `PreToolUse`
   shell-command authorization (allow / deny / ask, with a per-session approval
   cache), and `PostToolUse` web-content scanning of `curl`/`wget` output, of
-  `python`/`node`/… one-liners that fetch a URL, of the files those commands download,
+  `python`/`node`/… one-liners that fetch a URL, of PowerShell fetches on Windows
+  (`curl.exe`, `Invoke-WebRequest`/`iwr`, `Invoke-RestMethod`/`irm`, `Start-BitsTransfer`,
+  `Net.WebClient`), of the files those commands download,
   and of web-fetching and search MCP tools, and security scanning of `apply_patch` edits,
 - the `setup`, `status` and `guardrails` skills.
 
@@ -32,7 +34,8 @@ ahead). After the fetch, instructions hidden from a human reader (HTML comments,
 invisible text, …) are removed and the rest of the page is passed on with a note; a
 page with a visible instruction aimed at the agent is withheld.
 
-**Downloaded files** (`curl -o`/`-O`, `wget`, `> file`, `tee`): the files a fetch
+**Downloaded files** (`curl -o`/`-O`, `wget`, `> file`, `tee`; on Windows `-OutFile`,
+`-Destination`, `| Out-File`/`Set-Content`, `WebClient.DownloadFile`): the files a fetch
 command just wrote are scanned too, since a later `cat`, `grep -r` or editor would
 otherwise read them unchecked. A flagged file is **rewritten in place** — with the
 cleaned page when only hidden instructions or secrets were removed, otherwise with a

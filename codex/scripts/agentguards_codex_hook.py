@@ -473,9 +473,29 @@ def _command_text(value) -> str:
 
 _FETCH_BINARIES = {"curl", "wget", "http", "https", "fetch", "aria2c"}
 
+# Windows: Codex runs commands in PowerShell, where a fetch is `curl.exe -o x URL`,
+# `Invoke-WebRequest -Uri URL -OutFile x`, `(iwr URL).Content`, `$r = irm URL`, and
+# `curl`/`wget` are ALIASES of Invoke-WebRequest in Windows PowerShell 5.1. Matched
+# case-insensitively in command position — line start, or after ( $( = | ; & { — not after
+# plain whitespace, so a commit message that mentions "irm" is not a fetch.
+_PS_FETCH_RE = re.compile(
+    r"(?:^|[(=|;&{]|\$\()\s*(?:&\s*)?(?:[\w.:~$\\/-]*[\\/])?"
+    r"(?:curl|wget|invoke-webrequest|iwr|invoke-restmethod|irm|start-bitstransfer)(?:\.exe)?(?![\w.-])",
+    re.I | re.M)
+# .NET clients a PowerShell one-liner fetches with; a fetch only together with a URL.
+_PS_CLIENT_RE = re.compile(r"\bNet\.WebClient\b|\bHttpClient\b", re.I)
+
+
+def _binary_name(binary: str) -> str:
+    """A binary as a fetch name: no Windows path, `(`/`$(` prefix or .exe, lower case."""
+    name = re.sub(r"^\$?\(+", "", binary.rsplit("\\", 1)[-1])
+    return re.sub(r"\.exe$", "", name, flags=re.I).lower()
+
 
 def _is_fetch_command(command: str) -> bool:
-    return any(b in _FETCH_BINARIES for b in _command_binaries(command))
+    return (any(_binary_name(b) in _FETCH_BINARIES for b in _command_binaries(command))
+            or bool(_PS_FETCH_RE.search(command or ""))
+            or bool(_PS_CLIENT_RE.search(command or "") and _embedded_urls(command)))
 
 
 # Interpreters that fetch when handed a URL inline: `python3 -c "requests.get('https://…')"`,
@@ -832,6 +852,8 @@ def _command_urls(command: str) -> list[str]:
     urls: list[str] = []
     for word in (command or "").split():
         word = re.sub(r"^--?[A-Za-z][A-Za-z0-9-]*=", "", word).strip("\"'`()<>;,")
+        # A quote never belongs to a URL: `(iwr 'https://x').Content` is https://x.
+        word = re.split(r"[\"'`]", word, maxsplit=1)[0].rstrip("()<>;,")
         if (_SCHEME_RE.match(word) or _BARE_HOST_RE.match(word)) and word not in urls:
             urls.append(word)
     # Plus http(s) URLs a word split misses: inside a JSON body or a quoted script.
@@ -941,9 +963,12 @@ def _event_cwd(event: dict) -> str:
     return cwd if isinstance(cwd, str) and cwd else os.getcwd()
 
 
+# Home-relative spellings a download path can use: ~/x, ~\x, $HOME\x, $env:USERPROFILE\x.
+_HOME_PREFIX_RE = re.compile(r"^(?:~|\$HOME|\$env:USERPROFILE)(?=$|[\\/])", re.I)
+
+
 def _resolve_path(cwd: str, path: str) -> str:
-    if path == "~" or path.startswith("~/"):
-        path = str(Path.home()) + path[1:]
+    path = _HOME_PREFIX_RE.sub(lambda _m: str(Path.home()), path, count=1)
     return os.path.normpath(os.path.join(cwd, path))
 
 
@@ -1074,6 +1099,46 @@ def _wget_outputs(args: list[str]) -> tuple[list[str], bool]:
     return [os.path.join(prefix, _url_file_name(u, True) or "index.html") for u in urls], True
 
 
+# PowerShell file writers that take the path as their first positional argument, and the
+# options of theirs that take a value (so `Out-File -Encoding utf8 x` writes x, not utf8).
+_PS_WRITERS = {"out-file", "set-content", "add-content", "sc", "ac"}
+_PS_PATH_OPTIONS = {"-filepath", "-path", "-literalpath"}
+_PS_VALUE_OPTIONS = {"-encoding", "-width", "-value", "-inputobject", "-stream", "-delimiter"}
+_DOWNLOAD_FILE_RE = re.compile(r"\.DownloadFile\(\s*['\"][^'\"]*['\"]\s*,\s*['\"]([^'\"]+)['\"]", re.I)
+
+
+def _powershell_outputs(part: str, words: list[str], names: list[str]) -> list[str]:
+    """Files a PowerShell fetch writes: Invoke-WebRequest/irm -OutFile, Start-BitsTransfer
+    -Destination, `| Out-File`/Set-Content/Add-Content, WebClient.DownloadFile(url, path)."""
+    outputs: list[str] = []
+    for i, word in enumerate(words):
+        low = word.lower()
+        if low in ("-outfile", "-destination") and i + 1 < len(words):
+            outputs.append(words[i + 1])
+        elif low.startswith(("-outfile:", "-destination:")):
+            outputs.append(word.split(":", 1)[1])
+    if names and names[0] in _PS_WRITERS:
+        j, positional = 1, None
+        while j < len(words):
+            low = words[j].lower()
+            if low in _PS_PATH_OPTIONS and j + 1 < len(words):
+                outputs.append(words[j + 1])
+                positional = ""
+                j += 1
+            elif low.startswith(tuple(o + ":" for o in _PS_PATH_OPTIONS)):
+                outputs.append(words[j].split(":", 1)[1])
+                positional = ""
+            elif low in _PS_VALUE_OPTIONS:
+                j += 1
+            elif not low.startswith("-") and positional is None:
+                positional = words[j]
+            j += 1
+        if positional:
+            outputs.append(positional)
+    outputs += _DOWNLOAD_FILE_RE.findall(part)
+    return outputs
+
+
 def _download_targets(command: str, cwd: str) -> list[tuple[str, bool]]:
     """(path, numbered) for each file the fetching statements of *command* may write:
     curl -o/-O/--output-dir, wget -O/-P/default names, and > / >> / tee anywhere in the
@@ -1085,13 +1150,14 @@ def _download_targets(command: str, cwd: str) -> list[tuple[str, bool]]:
             continue
         for part in statement:
             words = _words(part.split("\n", 1)[0])
-            names = [w.split("/")[-1] for w in words]
+            names = [_binary_name(w.split("/")[-1]) for w in words]
             outputs: list[tuple[str, bool]] = []
             for i, word in enumerate(words):
                 m = _REDIRECT_RE.match(word)
                 if m and not m.group(1).startswith("&"):
                     outputs.append((m.group(1) or (words[i + 1] if i + 1 < len(words) else ""), False))
-            binaries = _command_binaries(part)
+            binaries = [_binary_name(b) for b in _command_binaries(part)]
+            outputs += [(o, False) for o in _powershell_outputs(part, words, names)]
             if "tee" in binaries and "tee" in names:
                 outputs += [(w, False) for w in words[names.index("tee") + 1:] if not w.startswith("-")]
             if "curl" in binaries and "curl" in names:

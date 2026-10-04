@@ -768,8 +768,29 @@ function Test-InterpreterPart([string]$Part) {
     return $false
 }
 
+# Windows: Codex runs commands in PowerShell, where a fetch is `curl.exe -o x URL`,
+# `Invoke-WebRequest -Uri URL -OutFile x`, `(iwr URL).Content`, `$r = irm URL`, and
+# curl/wget are ALIASES of Invoke-WebRequest in Windows PowerShell 5.1. Matched in command
+# position only (not after plain whitespace). Mirrors _PS_FETCH_RE / _PS_CLIENT_RE.
+$PsFetchRegex = [regex]::new('(?:^|[(=|;&{]|\$\()\s*(?:&\s*)?(?:[\w.:~$\\/-]*[\\/])?(?:curl|wget|invoke-webrequest|iwr|invoke-restmethod|irm|start-bitstransfer)(?:\.exe)?(?![\w.-])', 'IgnoreCase, Multiline')
+$PsClientRegex = [regex]::new('\bNet\.WebClient\b|\bHttpClient\b', 'IgnoreCase')
+
+# A binary as a fetch name: no Windows path, ( / $( prefix or .exe, lower case. Mirrors _binary_name.
+function Get-BinaryName([string]$Binary) {
+    $n = (($Binary -split '\\')[-1]) -replace '^\$?\(+', ''
+    return ($n -replace '\.exe$', '').ToLowerInvariant()
+}
+
+# The Codex hook's fetch test: the shared core's binaries plus PowerShell fetches.
+function Test-CodexFetchCommand([string]$Command) {
+    foreach ($b in (Get-CommandBinaries $Command)) { if ($FetchBinaries -ccontains (Get-BinaryName $b)) { return $true } }
+    if ([string]::IsNullOrEmpty($Command)) { return $false }
+    if ($PsFetchRegex.IsMatch($Command)) { return $true }
+    return ($PsClientRegex.IsMatch($Command) -and (Get-EmbeddedUrls $Command).Count -gt 0)
+}
+
 function Test-WebPart([string]$Part) {
-    return ((Test-FetchCommand $Part) -or (Test-InterpreterPart $Part))
+    return ((Test-CodexFetchCommand $Part) -or (Test-InterpreterPart $Part))
 }
 
 function Test-InterpreterFetch([string]$Command) {
@@ -778,13 +799,13 @@ function Test-InterpreterFetch([string]$Command) {
 }
 
 function Test-WebCommand([string]$Command) {
-    return ((Test-FetchCommand $Command) -or (Test-InterpreterFetch $Command))
+    return ((Test-CodexFetchCommand $Command) -or (Test-InterpreterFetch $Command))
 }
 
 # URLs to check before a web command runs; an interpreter one-liner sends only the
 # http(s) URLs of its own script. Mirrors _web_command_urls.
 function Get-WebCommandUrls([string]$Command) {
-    if (Test-FetchCommand $Command) { return , (Get-CommandUrls $Command) }
+    if (Test-CodexFetchCommand $Command) { return , (Get-CommandUrls $Command) }
     $urls = [System.Collections.Generic.List[string]]::new()
     foreach ($st in (Get-Statements $Command)) {
         foreach ($p in $st) {
@@ -824,6 +845,8 @@ function Get-CommandUrls([string]$Command) {
     foreach ($word in ($Command -split '\s+')) {
         if ($word.Length -eq 0) { continue }
         $w = ($word -replace '^--?[A-Za-z][A-Za-z0-9-]*=', '').Trim([char[]]('"', "'", '`', '(', ')', '<', '>', ';', ','))
+        # A quote never belongs to a URL: (iwr 'https://x').Content is https://x.
+        $w = (($w -split '["''`]', 2)[0]).TrimEnd([char[]]('(', ')', '<', '>', ';', ','))
         if ((($w -cmatch $SchemePattern) -or ($w -cmatch $BareHostPattern)) -and -not $urls.Contains($w)) {
             $urls.Add($w)
         }
@@ -929,7 +952,9 @@ function Join-CommandPath([string]$A, [string]$B) {
 }
 
 function Resolve-CommandPath([string]$Cwd, [string]$Path) {
-    if ($Path -ceq '~' -or $Path.StartsWith('~/')) { $Path = (Get-HomeDir) + $Path.Substring(1) }
+    # ~/x, ~\x, $HOME\x, $env:USERPROFILE\x (mirrors _HOME_PREFIX_RE).
+    $hm = [regex]::Match($Path, '^(?:~|\$HOME|\$env:USERPROFILE)(?=$|[\\/])', 'IgnoreCase')
+    if ($hm.Success) { $Path = (Get-HomeDir) + $Path.Substring($hm.Length) }
     try { $full = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($Cwd, $Path)) } catch { return $null }
     # os.path.normpath drops a trailing separator; GetFullPath keeps it.
     $root = [System.IO.Path]::GetPathRoot($full)
@@ -1069,6 +1094,40 @@ function Get-WgetOutputs($ArgList) {
     return @{ Files = $files.ToArray(); Numbered = $true }
 }
 
+# PowerShell file writers taking the path as their first positional argument, and their
+# value-taking options. Mirrors _PS_WRITERS / _PS_PATH_OPTIONS / _PS_VALUE_OPTIONS.
+$PsWriters = @('out-file', 'set-content', 'add-content', 'sc', 'ac')
+$PsPathOptions = @('-filepath', '-path', '-literalpath')
+$PsValueOptions = @('-encoding', '-width', '-value', '-inputobject', '-stream', '-delimiter')
+$DownloadFilePattern = '\.DownloadFile\(\s*[''"][^''"]*[''"]\s*,\s*[''"]([^''"]+)[''"]'
+
+# Files a PowerShell fetch writes (mirrors _powershell_outputs).
+function Get-PowerShellOutputs([string]$Part, $Words, $Names) {
+    $w = @($Words); $nm = @($Names)
+    $outputs = [System.Collections.Generic.List[string]]::new()
+    for ($i = 0; $i -lt $w.Count; $i++) {
+        $low = ([string]$w[$i]).ToLowerInvariant()
+        if (($low -ceq '-outfile' -or $low -ceq '-destination') -and ($i + 1) -lt $w.Count) { $outputs.Add([string]$w[$i + 1]) }
+        elseif ($low.StartsWith('-outfile:') -or $low.StartsWith('-destination:')) { $outputs.Add(([string]$w[$i]).Split([char]':', 2)[1]) }
+    }
+    if ($nm.Count -gt 0 -and ($PsWriters -ccontains [string]$nm[0])) {
+        $j = 1; $positional = $null
+        while ($j -lt $w.Count) {
+            $low = ([string]$w[$j]).ToLowerInvariant()
+            $pathOpt = $false
+            foreach ($o in $PsPathOptions) { if ($low.StartsWith($o + ':')) { $pathOpt = $true } }
+            if (($PsPathOptions -ccontains $low) -and ($j + 1) -lt $w.Count) { $outputs.Add([string]$w[$j + 1]); $positional = ''; $j++ }
+            elseif ($pathOpt) { $outputs.Add(([string]$w[$j]).Split([char]':', 2)[1]); $positional = '' }
+            elseif ($PsValueOptions -ccontains $low) { $j++ }
+            elseif (-not $low.StartsWith('-') -and $null -eq $positional) { $positional = [string]$w[$j] }
+            $j++
+        }
+        if ($positional) { $outputs.Add($positional) }
+    }
+    foreach ($m in [regex]::Matches($Part, $DownloadFilePattern, 'IgnoreCase')) { $outputs.Add($m.Groups[1].Value) }
+    return , $outputs.ToArray()
+}
+
 # (path, numbered) for each file the fetching statements of the command may write.
 # Returns a list of @{ Path; Numbered }. Mirrors _download_targets.
 function Get-DownloadTargets([string]$Command, [string]$Cwd) {
@@ -1080,7 +1139,7 @@ function Get-DownloadTargets([string]$Command, [string]$Cwd) {
         if (-not $isWeb) { continue }
         foreach ($part in $statement) {
             $words = Get-Words (($part -split "`n", 2)[0])
-            $names = @($words | ForEach-Object { ($_ -split '/')[-1] })
+            $names = @($words | ForEach-Object { Get-BinaryName (($_ -split '/')[-1]) })
             $outputs = [System.Collections.Generic.List[object]]::new()
             for ($i = 0; $i -lt $words.Count; $i++) {
                 $m = [regex]::Match($words[$i], $RedirectPattern)
@@ -1090,7 +1149,8 @@ function Get-DownloadTargets([string]$Command, [string]$Cwd) {
                     $outputs.Add(@($target, $false))
                 }
             }
-            $binaries = @(Get-CommandBinaries $part)
+            $binaries = @(Get-CommandBinaries $part | ForEach-Object { Get-BinaryName $_ })
+            foreach ($o in (Get-PowerShellOutputs $part $words $names)) { $outputs.Add(@($o, $false)) }
             $tee = [array]::IndexOf([string[]]$names, 'tee')
             if (($binaries -ccontains 'tee') -and $tee -ge 0) {
                 for ($j = $tee + 1; $j -lt $words.Count; $j++) { if (-not $words[$j].StartsWith('-')) { $outputs.Add(@($words[$j], $false)) } }
