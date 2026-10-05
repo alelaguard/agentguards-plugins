@@ -64,7 +64,7 @@ for _stream in (sys.stdout, sys.stderr):
 AGENTGUARDS_URL = os.getenv("AGENTGUARDS_URL", "https://prod.agentguards.co").rstrip("/")
 # This plugin's version, sent with every request ("codex/py/<version>") so the API
 # can tell an outdated plugin how to update. Must equal plugin.json (a test checks).
-_PLUGIN_VERSION = "0.2.23"
+_PLUGIN_VERSION = "0.2.24"
 
 # Per-session approval cache. A command reaching PostToolUse actually ran (= it
 # was approved), so we remember its binaries keyed by session_id and skip

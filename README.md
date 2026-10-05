@@ -10,11 +10,11 @@ fail-open (availability-first) with a single environment variable.
 
 | Plugin | Agent | Deployment | Version | Description |
 |---|---|---|---|---|
-| [`agentguards-claude`](./claude) | Claude Code | hosted | `0.2.36` | Enforcing hooks (input, Bash, web-content with pre-fetch URL check, code scan). No MCP server. |
-| [`agentguards-codex`](./codex) | OpenAI Codex | hosted | `0.2.23` | Enforcing hooks (input, shell, web-content with pre-fetch URL check, code scan). No MCP server. |
+| [`agentguards-claude`](./claude) | Claude Code | hosted | `0.2.37` | Enforcing hooks (input, Bash, web-content with pre-fetch URL check, code scan). No MCP server. |
+| [`agentguards-codex`](./codex) | OpenAI Codex | hosted | `0.2.24` | Enforcing hooks (input, shell, web-content with pre-fetch URL check, code scan). No MCP server. |
 | [`agentguards-gemini`](./gemini) | Gemini CLI | hosted | `0.1.9` | MCP server + enforcing hooks (input, tool-call, web-content) and security instructions. |
 | [`agentguards-copilot`](./copilot) | GitHub Copilot CLI | hosted | `0.1.7` | MCP server + enforcing hooks (input, shell, web-content) and security instructions. |
-| [`@agentguardsco/opencode-plugin`](./opencode) | OpenCode | hosted | `0.1.8` | Enforcing plugin (prompt, `bash`, web-content with pre-fetch URL check), + MCP server and security instructions. |
+| [`@agentguardsco/opencode-plugin`](./opencode) | OpenCode | hosted | `0.1.9` | Enforcing plugin (prompt, `bash`, web-content with pre-fetch URL check), + MCP server and security instructions. |
 | [`agentguards-claude-selfhosted`](./claude-selfhosted) | Claude Code | self-hosted | `0.1.11` | Hooks only — no bundled MCP server, and no default URL, so it can never talk to the hosted service by accident. |
 | [`agentguards-codex-selfhosted`](./codex-selfhosted) | OpenAI Codex | self-hosted | `0.1.6` | Hooks only — no bundled MCP server, and no default URL. |
 | [`agentguards-gemini-selfhosted`](./gemini-selfhosted) | Gemini CLI | self-hosted | `0.1.5` | Hooks only — no bundled MCP server, and no default URL. |
@@ -121,4 +121,9 @@ MCP server setup (a separate step for OpenCode, unlike the other agents above).
 
 ## License
 
-MIT
+The hosted plugins (`claude/`, `codex/`, `gemini/`, `copilot/`, `opencode/`) are source-available
+under the [Functional Source License 1.1, MIT Future License](https://fsl.software): free to read,
+use and modify for anything except a competing product, and each version becomes MIT two years
+after release. The self-hosted plugins and everything else here are MIT. Earlier releases stay MIT.
+See [`LICENSING.md`](./LICENSING.md) for the details and [`TRADEMARKS.md`](./TRADEMARKS.md) for the
+name and logo.

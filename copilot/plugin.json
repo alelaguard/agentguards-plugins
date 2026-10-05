@@ -6,7 +6,7 @@
     "name": "AgentGuards",
     "email": "support@agentguards.co"
   },
-  "license": "MIT",
+  "license": "FSL-1.1-MIT",
   "keywords": [
     "security",
     "guardrails",

@@ -117,7 +117,7 @@ def _installer_key() -> str:
 AGENTGUARDS_URL = (os.getenv("AGENTGUARDS_URL") or "https://prod.agentguards.co").rstrip("/")
 # This plugin's version, sent with every request ("claude-code/py/<version>") so the API
 # can tell an outdated plugin how to update. Must equal plugin.json (a test checks).
-_PLUGIN_VERSION = "0.2.36"
+_PLUGIN_VERSION = "0.2.37"
 AGENTGUARDS_API_KEY = (
     os.getenv("AGENTGUARDS_API_KEY")
     or os.getenv("CLAUDE_PLUGIN_OPTION_AGENTGUARDS_API_KEY")

@@ -2,7 +2,7 @@
   "name": "agentguards-claude",
   "displayName": "AgentGuards",
   "description": "LLM security guardrails for Claude Code — jailbreak detection, prompt-injection and web-content scanning, data-exfiltration blocking, and destructive-command authorization. Enforced by hooks on every prompt, shell command, fetched page and file write.",
-  "version": "0.2.36",
+  "version": "0.2.37",
   "author": {
     "name": "AgentGuards",
     "email": "support@agentguards.co",
@@ -10,7 +10,7 @@
   },
   "homepage": "https://agentguards.co",
   "repository": "https://github.com/alelaguard/agentguards-plugins",
-  "license": "MIT",
+  "license": "FSL-1.1-MIT",
   "userConfig": {
     "agentguards_api_key": {
       "type": "string",
