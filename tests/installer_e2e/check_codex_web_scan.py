@@ -136,6 +136,6 @@ check("search MCP tool result: withheld", verdict == "block")
 
 with urllib.request.urlopen(f"{MOCK}/_requests") as r:
     clients = {e["client"] for e in json.load(r)}
-check("every request came from the Python hook", "codex/py" in clients, str(clients))
+check("every request came from the Python hook", any(c.startswith("codex/py") for c in clients), str(clients))
 server.shutdown()
 sys.exit(1 if failures else 0)

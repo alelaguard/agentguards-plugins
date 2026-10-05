@@ -510,7 +510,9 @@ function Read-Event {
 
 # --- Codex-specific ---------------------------------------------------------------------
 
-$script:ClientName = 'codex/ps1'
+# This plugin's version (must equal plugin.json; a test checks), sent as codex/ps1/<version>.
+$PluginVersion = '0.2.23'
+$script:ClientName = 'codex/ps1/' + $PluginVersion
 # os.getenv(name, default): the default applies only when UNSET, as in the Python hook.
 $script:AgentGuardsUrl = $env:AGENTGUARDS_URL
 if ($null -eq $script:AgentGuardsUrl) { $script:AgentGuardsUrl = 'https://prod.agentguards.co' }

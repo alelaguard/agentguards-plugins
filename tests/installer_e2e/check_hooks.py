@@ -60,7 +60,8 @@ for agent, (root, shell, event, want_client) in AGENTS.items():
                               capture_output=True, text=True, env=env, timeout=60)
         results[name] = verdict(proc)
         clients = {r["client"] for r in requests_since(before)}
-        if clients != {want_client}:
+        # Since claude 0.2.36 / codex 0.2.23 the header carries the version too.
+        if not clients or not all(c == want_client or c.startswith(want_client + "/") for c in clients):
             print(f"FAIL {agent}: expected requests from {want_client}, saw {sorted(clients) or 'none'}")
             failures += 1
     good = results == {"jailbreak": "block", "benign": "allow"}

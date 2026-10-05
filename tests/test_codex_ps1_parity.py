@@ -164,7 +164,7 @@ def both(go_bin, api, tmp_path, event_type, event, *, env=None, seed_approvals=N
             (home / ".codex" / "agentguards_session_approvals.json").write_text(json.dumps(seed_approvals))
         results[name] = _run(cmd, event_type, stdin, home, env, api)
     py, go = results["py"], results["go"]
-    assert py["clients"] <= {"codex/py"} and go["clients"] <= {"codex/ps1"}
+    assert all(c.startswith("codex/py/") for c in py["clients"]) and all(c.startswith("codex/ps1/") for c in go["clients"])
     for field in ("exit", "verdict", "requests", "approvals", "stderr"):
         assert go[field] == py[field], f"{field} differs:\n  python: {py[field]!r}\n  go:     {go[field]!r}"
     return py
