@@ -1,8 +1,8 @@
 {
   "name": "@agentguardsco/claude-plugin",
-  "version": "0.2.36",
+  "version": "0.2.37",
   "description": "LLM security guardrails for Claude Code — jailbreak detection, prompt-injection and web-content scanning, data-exfiltration blocking, and destructive-command authorization. Enforced by hooks on every prompt, shell command, fetched page and file write.",
-  "license": "MIT",
+  "license": "FSL-1.1-MIT",
   "homepage": "https://agentguards.co",
   "repository": {
     "type": "git",
