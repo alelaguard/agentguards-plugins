@@ -207,3 +207,13 @@ def test_shell_commands_still_go_to_the_action_scorer(tmp_path, answer, expected
     assert ("/v1/actions/authorize",
             {"action": "tool_call", "tool": "run_shell_command",
              "parameters": {"command": "make build"}}) in calls
+
+
+def test_a_non_shell_tool_with_a_command_is_still_scored(tmp_path):
+    # e.g. an MCP server's execute_command: the server scores a `command` as shell.
+    hook, calls = _hook(tmp_path, {"/v1/actions/authorize": {"decision": "deny", "reason": "destructive"}})
+    out = _out(drive(hook, "handle_before_tool",
+                     {"tool_name": "mcp_terminal_execute_command",
+                      "tool_input": {"command": "rm -" + "rf ~/work"}}))
+    assert out.get("decision") == "deny"
+    assert "/v1/actions/authorize" in [p for p, _ in calls]
