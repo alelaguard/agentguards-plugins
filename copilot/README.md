@@ -12,8 +12,8 @@ This plugin bundles:
 
 - **enforcing hooks** — `userPromptSubmitted` input scanning, `preToolUse`
   shell-command authorization (allow / deny / ask), and `postToolUse`
-  web-content scanning of `curl`/`wget` output, the built-in `web_fetch` tool and
-  web-fetching MCP tools,
+  web-content scanning of `curl`/`wget` output, the built-in `web_fetch` and
+  `web_search` tools and web-fetching MCP tools,
 - **web scan** (when enabled for your account): before `web_fetch`, a `curl`/`wget`
   command or a web-fetching MCP tool runs, every URL it will request is checked and the
   fetch is denied if a URL carries a secret, targets a cloud metadata endpoint, uses a
