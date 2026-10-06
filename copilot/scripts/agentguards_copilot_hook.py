@@ -546,8 +546,10 @@ def _tool_result_text(event: dict) -> str:
 
 # --- web scan v2: pre-fetch URL check + fetch metadata ------------------------------------
 
-# Copilot's built-in web fetch tool (runtime name; "WebFetch" in the Claude-format events).
-_WEB_TOOLS = {"web_fetch", "WebFetch"}
+# Copilot's built-in web tools (runtime names; "WebFetch" in the Claude-format events).
+# web_search reaches hooks as plain "web_search" — no server prefix, so the MCP name
+# match below never sees it (verified live 2026-10-06, Copilot CLI 1.0.78).
+_WEB_TOOLS = {"web_fetch", "WebFetch", "web_search"}
 # MCP tools that fetch or read web pages. Copilot names them serverName-toolName (hooks
 # reference, "MCP tool name sanitization"); server names may themselves contain "-", so
 # this is a best-effort match on everything after the first "-". Built-in tools have no "-".
@@ -626,8 +628,42 @@ def _fetch_metadata(tool_name: str, tool_args: dict) -> dict:
     return meta
 
 
+def _unwrap_web_search(text: str) -> str:
+    """web_search returns JSON as text: {"type": "output_text", "text": {"value": "...",
+    "annotations": [{"url_citation": {"title": ..., "url": ...}}]}, "annotations": [...]}.
+
+    Scan (and hand back, if redacted) the answer plus every cited page's title and URL —
+    titles come from the pages, so they are attacker-controlled too — not the JSON
+    escaping. `bing_searches` (Copilot's own queries) is left out. Anything that isn't
+    this shape is returned unchanged and scanned as it is.
+    """
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return text
+    inner = data.get("text") if isinstance(data, dict) else None
+    value = inner.get("value") if isinstance(inner, dict) else None
+    if not (isinstance(value, str) and value.strip()):
+        return text
+    sources: list[str] = []
+    anns = [a for src in (inner.get("annotations"), data.get("annotations"))
+            if isinstance(src, list) for a in src]
+    for ann in anns:
+        cite = ann.get("url_citation") if isinstance(ann, dict) else None
+        if not isinstance(cite, dict):
+            continue
+        line = " — ".join(str(cite[k]) for k in ("title", "url") if isinstance(cite.get(k), str) and cite[k])
+        if line and line not in sources:
+            sources.append(line)
+    if sources:
+        value += "\n\nSources:\n" + "\n".join(f"- {s}" for s in sources)
+    return value
+
+
 def _scan_web_output(text: str, tool_name: str = "", tool_args: dict | None = None) -> None:
     """Scan fetched content through the web_fetch guardrail; strip or withhold if flagged."""
+    if tool_name == "web_search":
+        text = _unwrap_web_search(text)
     if not text.strip():
         return
     payload = {"text": text, "use_case": "web_fetch", "channel": "copilot_cli"}

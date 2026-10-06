@@ -161,3 +161,74 @@ def test_raw_fetch_output_is_scanned(tmp_path, tool, args):
     hook, calls = _hook(tmp_path, {})
     drive(hook, "handle_post_tool_use", _post_event(tool, args))
     assert calls[0][1]["metadata"] == {"tool": tool, "content_form": "raw", "url": "https://example.com/p"}
+
+
+# --- built-in web_search (0.1.9) ----------------------------------------------------
+#
+# Copilot's web search reaches hooks as plain "web_search" (no MCP server prefix), and its
+# textResultForLlm is JSON: {"type": "output_text", "text": {"value": "..."}}. 0.1.8 left it
+# unscanned (verified live 2026-10-06).
+
+def _search_event(answer="PostgreSQL 18.6 is the current stable release."):
+    body = json.dumps({"type": "output_text", "text": {"value": answer, "annotations": []}})
+    return {"toolName": "web_search", "toolArgs": {"query": "postgres stable version"},
+            "toolResult": {"resultType": "success", "textResultForLlm": body}}
+
+
+def test_web_search_results_are_scanned_as_the_answer_text(tmp_path):
+    hook, calls = _hook(tmp_path, {})
+    drive(hook, "handle_post_tool_use", _search_event())
+    path, payload = calls[0]
+    assert path == "/v1/guardrails/evaluate-input" and payload["use_case"] == "web_fetch"
+    assert payload["text"] == "PostgreSQL 18.6 is the current stable release."  # unwrapped
+    assert payload["metadata"] == {"tool": "web_search", "content_form": "extracted"}
+
+
+def test_a_flagged_web_search_result_is_withheld(tmp_path):
+    hook, _ = _hook(tmp_path, {"/v1/guardrails/evaluate-input": {
+        "decision": "block", "checks": [{"check_name": "web_injection", "passed": False,
+                                         "reason": "instruction aimed at the agent"}]}})
+    out = _out(drive(hook, "handle_post_tool_use", _search_event("ATTACK")))
+    assert "ATTACK" not in json.dumps(out)
+    assert out["modifiedResult"]["textResultForLlm"].startswith("[AgentGuards: web content withheld — web_injection")
+
+
+def test_a_stripped_web_search_result_hands_back_plain_text(tmp_path):
+    hook, _ = _hook(tmp_path, {"/v1/guardrails/evaluate-input": STRIP})
+    out = _out(drive(hook, "handle_post_tool_use", _search_event()))
+    assert out["modifiedResult"]["textResultForLlm"] == STRIP["redacted_text"]
+
+
+@pytest.mark.parametrize("raw", ["not json at all", '{"type": "other"}', '["a", "b"]', '{"text": {"value": "  "}}'])
+def test_web_search_text_that_is_not_the_usual_shape_is_scanned_as_is(tmp_path, raw):
+    hook, calls = _hook(tmp_path, {})
+    drive(hook, "handle_post_tool_use", {"toolName": "web_search", "toolArgs": {"query": "q"},
+                                         "toolResult": {"resultType": "success", "textResultForLlm": raw}})
+    assert calls[0][1]["text"] == raw
+
+
+def test_web_search_has_no_url_so_the_pre_fetch_check_is_skipped(tmp_path):
+    hook, calls = _hook(tmp_path, {})
+    out = _out(drive(hook, "handle_pre_tool_use", {"toolName": "web_search", "toolArgs": {"query": "q"}}))
+    assert out.get("permissionDecision", "allow") != "deny"
+    assert calls == []
+
+
+def test_web_search_citation_titles_and_urls_are_scanned_too(tmp_path):
+    # Titles come from the cited pages, so an attacker controls them.
+    hook, calls = _hook(tmp_path, {})
+    cite = {"url_citation": {"title": "EVIL TITLE", "url": "https://x.example/p"}}
+    body = json.dumps({"type": "output_text", "bing_searches": [{"text": "q"}],
+                       "text": {"value": "Answer.", "annotations": [cite]}, "annotations": [cite]})
+    drive(hook, "handle_post_tool_use", {"toolName": "web_search", "toolArgs": {"query": "q"},
+                                         "toolResult": {"resultType": "success", "textResultForLlm": body}})
+    assert calls[0][1]["text"] == "Answer.\n\nSources:\n- EVIL TITLE — https://x.example/p"
+
+
+@pytest.mark.parametrize("anns", [{"a": 1}, "x", None, [1, "s", {"url_citation": "no"}]])
+def test_odd_web_search_annotations_never_crash_the_hook(tmp_path, anns):
+    hook, calls = _hook(tmp_path, {})
+    body = json.dumps({"text": {"value": "Answer.", "annotations": anns}, "annotations": anns})
+    drive(hook, "handle_post_tool_use", {"toolName": "web_search", "toolArgs": {"query": "q"},
+                                         "toolResult": {"resultType": "success", "textResultForLlm": body}})
+    assert calls[0][1]["text"] == "Answer."
