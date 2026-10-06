@@ -781,13 +781,15 @@ def handle_before_tool(event: dict) -> None:
         if message:
             _block(message, "[AgentGuards] Fetch blocked")
 
-    # Only shell commands go to the action scorer, as in the Claude and Codex plugins.
-    # The server allowlists business tools, not agent built-ins, so every other tool
-    # (read_file, web_fetch, google_web_search, …) came back require-approval. Gemini
-    # before 0.40 has no "ask" decision, so the soft-block below could never be lifted
-    # and those tools were blocked for good. Fetch tools are still URL-checked above and
-    # their content scanned in AfterTool; writes are still code-scanned in AfterTool.
-    if tool_name not in _SHELL_TOOLS:
+    # Only commands go to the action scorer: the shell tool, plus any tool (e.g. an MCP
+    # "execute_command") whose input carries a `command` string, which the server
+    # scores as a shell command. The server allowlists business tools, not agent
+    # built-ins, so every other tool (read_file, web_fetch, google_web_search, …) came
+    # back require-approval. Gemini before 0.40 has no "ask" decision, so the soft-block
+    # below could never be lifted and those tools were blocked for good. Fetch tools are
+    # still URL-checked above and their content scanned in AfterTool; writes are still
+    # code-scanned in AfterTool.
+    if tool_name not in _SHELL_TOOLS and not str(tool_input.get("command") or "").strip():
         _allow()
 
     # The risk scorer ALWAYS runs first — the session cache can only downgrade a
