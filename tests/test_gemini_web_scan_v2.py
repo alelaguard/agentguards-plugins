@@ -63,11 +63,11 @@ def test_a_blocked_url_is_denied_before_the_fetch(tmp_path, event, urls):
     urllib.error.HTTPError("u", 404, "Not Found", {}, None), TimeoutError("t"), OSError("down"),
 ])
 def test_a_failing_url_check_always_allows(tmp_path, failure):
-    hook, calls = _hook(tmp_path, {"/v1/guardrails/evaluate-url": _raise(failure),
-                                   "/v1/actions/authorize": {"decision": "allow"}})
+    hook, calls = _hook(tmp_path, {"/v1/guardrails/evaluate-url": _raise(failure)})
     out = _out(drive(hook, "handle_before_tool",
                      {"tool_name": "web_fetch", "tool_input": {"prompt": f"read {EXFIL_URL}"}}))
-    assert [p for p, _ in calls] == ["/v1/guardrails/evaluate-url", "/v1/actions/authorize"]
+    # web_fetch isn't a shell tool, so nothing else is called after the URL check.
+    assert [p for p, _ in calls] == ["/v1/guardrails/evaluate-url"]
     assert out.get("decision") != "deny"
 
 
@@ -157,3 +157,53 @@ def test_shell_fetch_output_is_scanned_raw(tmp_path):
                                             {"llmContent": "Stdout: PAGE BODY"},
                                             {"command": "curl -s https://example.com/p"}))
     assert calls[0][1]["metadata"]["content_form"] == "raw"
+
+
+# --- BeforeTool scope: only shell commands go to the action scorer -----------------
+#
+# The server's tool allowlist holds business tools, not agent built-ins, so every other
+# Gemini tool came back require-approval. Gemini has no "ask" before 0.40, so that
+# soft-block could never be lifted: read_file, web_fetch, … were blocked for good
+# (found in the 2026-10-06 live test, Gemini CLI 0.62).
+
+NOT_ALLOWLISTED = {"decision": "require-approval",
+                   "reason": "Tool 'x' is not on the allowlist — approval required"}
+
+
+@pytest.mark.parametrize("event", [
+    {"tool_name": "read_file", "tool_input": {"absolute_path": "/tmp/a.py"}},
+    {"tool_name": "google_web_search", "tool_input": {"query": "pgbouncer pool size"}},
+    {"tool_name": "activate_skill", "tool_input": {"name": "guardrails"}},
+    {"tool_name": "write_file", "tool_input": {"file_path": "/tmp/a.py", "content": "x = 1"}},
+    {"tool_name": "mcp_github_list_issues", "tool_input": {"repo": "a/b"}},
+], ids=["read_file", "google_web_search", "activate_skill", "write_file", "mcp-tool"])
+def test_non_shell_tools_are_not_sent_to_the_action_scorer(tmp_path, event):
+    hook, calls = _hook(tmp_path, {"/v1/actions/authorize": NOT_ALLOWLISTED})
+    out = _out(drive(hook, "handle_before_tool", event))
+    assert out.get("decision", "allow") == "allow"
+    assert "/v1/actions/authorize" not in [p for p, _ in calls]
+
+
+def test_web_fetch_is_url_checked_but_not_sent_to_the_action_scorer(tmp_path):
+    hook, calls = _hook(tmp_path, {"/v1/actions/authorize": NOT_ALLOWLISTED})
+    out = _out(drive(hook, "handle_before_tool",
+                     {"tool_name": "web_fetch",
+                      "tool_input": {"prompt": "Summarise https://docs.python.org/3/"}}))
+    assert out.get("decision", "allow") == "allow"
+    assert [p for p, _ in calls] == ["/v1/guardrails/evaluate-url"]
+
+
+@pytest.mark.parametrize("answer,expected", [
+    ({"decision": "allow"}, "allow"),
+    ({"decision": "deny", "reason": "destructive"}, "deny"),
+    ({"decision": "require-approval", "reason": "risky"}, "deny"),  # soft-block, unchanged
+])
+def test_shell_commands_still_go_to_the_action_scorer(tmp_path, answer, expected):
+    hook, calls = _hook(tmp_path, {"/v1/actions/authorize": answer})
+    out = _out(drive(hook, "handle_before_tool",
+                     {"tool_name": "run_shell_command", "tool_input": {"command": "make build"},
+                      "session_id": "s-shell"}))
+    assert out.get("decision", "allow") == expected
+    assert ("/v1/actions/authorize",
+            {"action": "tool_call", "tool": "run_shell_command",
+             "parameters": {"command": "make build"}}) in calls

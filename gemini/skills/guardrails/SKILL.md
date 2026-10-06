@@ -6,7 +6,7 @@ description: AgentGuards security guardrails — the mandatory input-screening, 
 # AgentGuards — Security requirements (mandatory)
 
 This Gemini CLI instance is protected by AgentGuards. The bundled hooks enforce
-these guardrails automatically (input scanning, tool-call authorization,
+these guardrails automatically (input scanning, shell-command authorization,
 web-content redaction), but you must also follow the cooperative checks below
 whenever the AgentGuards MCP tools are available.
 

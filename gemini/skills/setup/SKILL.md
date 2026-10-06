@@ -40,5 +40,5 @@ hooks — the only thing the user must supply is their API key.
    exported in the environment Gemini CLI was launched from.
 
 5. **Summarize what is now active:** `BeforeAgent` input scanning, `BeforeTool`
-   tool-call authorization, `AfterTool` web-content scanning, and the
+   shell-command authorization, `AfterTool` web-content scanning, and the
    `check_input` / `authorize_action` MCP tools.
