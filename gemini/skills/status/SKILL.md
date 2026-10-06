@@ -16,7 +16,7 @@ Report the current state of AgentGuards protection.
    - **URL**: the value of `AGENTGUARDS_URL`, or the default
      `https://prod.agentguards.co`.
    - **Fail mode**: fail-closed unless `AGENTGUARDS_FAIL_OPEN=true`.
-   - **Active guardrails**: `BeforeAgent` input scanning, `BeforeTool` tool-call
+   - **Active guardrails**: `BeforeAgent` input scanning, `BeforeTool` shell-command
      authorization, `AfterTool` web-content scanning, and the MCP tools
      `check_input`, `authorize_action`, `validate_output`, `evaluate_policy`.
 
