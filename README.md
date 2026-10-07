@@ -20,7 +20,7 @@ fail-open (availability-first) with a single environment variable.
 | [`agentguards-gemini-selfhosted`](./gemini-selfhosted) | Gemini CLI | self-hosted | `0.1.5` | Hooks only — no bundled MCP server, and no default URL. |
 | [`agentguards-copilot-selfhosted`](./copilot-selfhosted) | GitHub Copilot CLI | self-hosted | `0.1.4` | Hooks only — no bundled MCP server, and no default URL. |
 
-Versions above are the current release in this repo; `.github/workflows/plugin-integrity.yml` fails the build if they drift from the plugin manifests. To see what you actually have installed, use your agent's own listing (`/plugin` in Claude Code).
+Versions above are the current release in this repo; our release checks fail if they drift from the plugin manifests. To see what you actually have installed, use your agent's own listing (`/plugin` in Claude Code).
 ## Install (Claude Code)
 
 ```
@@ -37,21 +37,6 @@ export AGENTGUARDS_API_KEY=ag_your_token_here
 Add that to your shell profile and restart Claude Code, or run
 `/agentguards:setup`. See [`claude/README.md`](./claude/README.md) for full
 configuration.
-
-**Alternative: install via npm.** The `claude/` plugin is also published as
-[`@agentguardsco/claude-plugin`](https://www.npmjs.com/package/@agentguardsco/claude-plugin)
-for programmatic use — pinning an exact version in `package.json`, CI
-provisioning, or embedding the hook script in your own tooling — outside of
-Claude Code's interactive `/plugin` flow:
-
-```
-npm install @agentguardsco/claude-plugin
-```
-
-Note this only fetches the plugin's files; it does **not** register hooks,
-skills, or the MCP server with Claude Code (that wiring happens through
-`/plugin install` above). Use the npm package when you need the raw files,
-use `/plugin install` when you want it running in Claude Code.
 
 ## Install (OpenAI Codex)
 
@@ -118,6 +103,13 @@ export AGENTGUARDS_API_KEY=ag_your_token_here
 Add that to your shell profile and restart OpenCode. See
 [`opencode/README.md`](./opencode/README.md) for full configuration, including
 MCP server setup (a separate step for OpenCode, unlike the other agents above).
+
+## About this repository
+
+This repository holds the released plugins and is what every install method reads from. It is
+published from our private development repository on each release, so it doesn't carry our
+tests or development history. Issues and security reports are welcome
+([`SECURITY.md`](./SECURITY.md)); we can't accept pull requests here.
 
 ## License
 

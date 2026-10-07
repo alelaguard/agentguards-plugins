@@ -1,6 +1,6 @@
 name: Publish Claude plugin to npm
 
-# Publishes claude/ and claude-selfhosted/ to the npm registry via npm Trusted
+# Publishes claude-selfhosted/ to the npm registry via npm Trusted
 # Publishing (OIDC) — no long-lived NPM_TOKEN is stored anywhere. GitHub Actions
 # proves its identity to npm directly, so the only setup is a one-time "trusted
 # publisher" link configured on npmjs.com for EACH package (repo:
@@ -11,11 +11,12 @@ name: Publish Claude plugin to npm
 # Long-lived publish tokens are being deprecated by npm (2FA-bypass GATs lose
 # publish rights ~Jan 2027), which is why we use OIDC instead.
 #
-# Trigger manually from the Actions tab ("Run workflow", choose which package),
-# or by pushing a tag: `claude-v*` publishes claude/, `claude-selfhosted-v*`
-# publishes claude-selfhosted/. Each plugin keeps its own version line (see
-# feedback-plugin-version-bump), so they are never published together from one
-# tag.
+# Trigger manually from the Actions tab ("Run workflow"), or by pushing a
+# `claude-selfhosted-v*` tag.
+#
+# @agentguardsco/claude-plugin (the hosted claude/ plugin) is no longer published
+# (2026-10): no install path used it — Claude Code installs from the marketplace in
+# this repo — and the package is deprecated on npm. Its old versions stay installable.
 
 on:
   workflow_dispatch:
@@ -25,11 +26,9 @@ on:
         required: true
         type: choice
         options:
-          - claude
           - claude-selfhosted
   push:
     tags:
-      - "claude-v*"
       - "claude-selfhosted-v*"
 
 permissions:
@@ -55,7 +54,7 @@ jobs:
           elif [[ "${{ github.ref_name }}" == claude-selfhosted-v* ]]; then
             echo "dir=claude-selfhosted" >> "$GITHUB_OUTPUT"
           else
-            echo "dir=claude" >> "$GITHUB_OUTPUT"
+            echo "::error::unexpected trigger ${{ github.ref_name }}" && exit 1
           fi
       - name: Publish
         working-directory: ${{ steps.pkg.outputs.dir }}

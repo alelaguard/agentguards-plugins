@@ -68,10 +68,6 @@ field is plaintext and readable by anyone using that environment, so prefer a
 separate key. Full walkthrough:
 [Claude Code in Cowork](https://agentguards.co/docs/claude-code-cowork).
 
-**Alternative: `npm install @agentguardsco/claude-plugin`.** Fetches these same
-files for programmatic use (pinned versions, CI, custom tooling) — it does
-not register with Claude Code on its own; use `/plugin install` above for that.
-
 ## Commands
 
 - `/agentguards:setup` — set your API key and verify everything is wired up.
