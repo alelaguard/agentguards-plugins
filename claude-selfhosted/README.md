@@ -43,10 +43,6 @@ Add both lines to your shell profile (`~/.bashrc`, `~/.zshrc`, …) and restart
 Claude Code. Or run `/agentguards:setup` and it will walk you through it,
 including the appliance's first-boot self-signed certificate if that applies.
 
-**Alternative: `npm install @agentguardsco/claude-selfhosted-plugin`.** Fetches
-these files for programmatic use — it does not register with Claude Code on
-its own; use `/plugin install` above for that.
-
 ## Commands
 
 - `/agentguards:setup` — configure the appliance URL and API key, and verify.
