@@ -625,7 +625,7 @@ function Test-OnlyRedactResolvableFailed($Result) {
 # --- Claude Code-specific -------------------------------------------------------------
 
 # This plugin's version (must equal plugin.json; a test checks), sent as claude-code/ps1/<version>.
-$PluginVersion = '0.2.38'
+$PluginVersion = '0.2.39'
 $script:ClientName = 'claude-code/ps1/' + $PluginVersion
 # (os.getenv(...) or default): an EMPTY value also means the default here.
 $script:AgentGuardsUrl = $env:AGENTGUARDS_URL
@@ -832,6 +832,95 @@ function Get-CachedFilePolicy {
     return $policy
 }
 
+# Windows PowerShell 5.1 (.NET Framework) THROWS in GetExtension / IsPathRooted /
+# Combine on '?', '|', '<', '"' ... - e.g. any Bash word like https://x/y?q=1. Uncaught,
+# that ends the hook with exit 1, which Claude Code treats as non-blocking: the command
+# would then run without even the authorize check. Such a name can't be a file anyway.
+function Get-MediaType([string]$Path) {
+    $ext = ''
+    try { $ext = [System.IO.Path]::GetExtension($Path).ToLowerInvariant() } catch { return $null }
+    if ($FileTypes.ContainsKey($ext)) { return $FileTypes[$ext] }
+    return $null
+}
+
+# Mirrors _command_media_files: quoted strings, then bare words, ending in a media
+# extension; "--opt=file.pdf" counts the part after "="; existing files only, max 3.
+$QuotedMedia = [regex]::new('(["''])([^"'']*?\.(?:png|jpe?g|gif|webp|pdf))\1', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+$ShellMediaMax = 3
+# Mirrors _NON_READING / _only_non_reading in the Python hook.
+$NonReading = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+foreach ($n in @('ls', 'cp', 'mv', 'rm', 'mkdir', 'rmdir', 'touch', 'chmod', 'chown', 'ln', 'du',
+                 'stat', 'file', 'wc', 'open', 'xdg-open',
+                 'dir', 'copy', 'move', 'del', 'ren', 'copy-item', 'move-item', 'remove-item',
+                 'rename-item', 'get-childitem', 'get-item', 'new-item')) { [void]$NonReading.Add($n) }
+$GitNonReading = @('add', 'mv', 'rm', 'status', 'commit', 'restore', 'checkout', 'stash', 'ls-files')
+function Test-OnlyNonReading([string]$Command) {
+    $text = $Command
+    if ($null -eq $text) { $text = '' }
+    if ($text.Contains('$(') -or $text.Contains('`') -or $text.Contains('<(')) { return $false }
+    foreach ($part in [regex]::Split($text, '[|;&\n]+')) {
+        $words = @($part.Split([char[]]@(' ', "`t", "`r", "`f", "`v"), [System.StringSplitOptions]::RemoveEmptyEntries) |
+            Where-Object { $_ -cnotmatch '^[A-Za-z_][A-Za-z0-9_]*=' })
+        if ($words.Count -eq 0) { continue }
+        $name = ([regex]::Split($words[0], '[\\/]'))[-1].ToLowerInvariant()
+        if ($name.EndsWith('.exe')) { $name = $name.Substring(0, $name.Length - 4) }
+        if ($name -eq 'git') {
+            if ($words.Count -lt 2 -or -not ($GitNonReading -contains $words[1].ToLowerInvariant())) { return $false }
+        } elseif (-not $NonReading.Contains($name)) { return $false }
+    }
+    return $true
+}
+
+function Get-CommandMediaFiles([string]$Command, [string]$Cwd) {
+    $text = $Command
+    if ($null -eq $text) { $text = '' }
+    if (Test-OnlyNonReading $text) { return , (New-Object System.Collections.Generic.List[object]) }
+    $candidates = New-Object System.Collections.Generic.List[string]
+    foreach ($m in $QuotedMedia.Matches($text)) { $candidates.Add($m.Groups[2].Value) }
+    $rest = $QuotedMedia.Replace($text, ' ')
+    foreach ($token in [regex]::Split($rest, '[\s|;&<>()`]+')) {
+        $t = $token.Split('=')[-1]
+        if ($t.Length -gt 0 -and $null -ne (Get-MediaType $t)) { $candidates.Add($t) }
+    }
+    $found = New-Object System.Collections.Generic.List[object]
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+    foreach ($c in $candidates) {
+        if ($c.StartsWith('~')) { $c = (Get-HomeDir) + $c.Substring(1) }
+        # Windows PowerShell 5.1 THROWS on '?', '*', '<', '|' ... in Combine/GetFullPath;
+        # such a name can't be a file there anyway (Python just finds no file): skip it.
+        try { $path = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($Cwd, $c)) } catch { continue }
+        if ($seen.Contains($path) -or -not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+        [void]$seen.Add($path)
+        $found.Add(@($path, (Get-MediaType $path)))
+        if ($found.Count -ge $ShellMediaMax) { break }
+    }
+    return , $found
+}
+
+# Mirrors _scan_local_files: deny on the first block, return when all are clean.
+function Invoke-ScanLocalFiles($Files, [string]$Tool) {
+    if ($null -eq $Files -or $Files.Count -eq 0) { return }
+    $policy = Get-CachedFilePolicy
+    if (-not (Test-PyTruthy (Get-Prop $policy 'scan_files' $true))) { return }
+    $max = Get-Prop $policy 'max_bytes'
+    if (-not (Test-PyTruthy $max)) { $max = $FileMaxBytes }
+    $max = [int64]$max
+    foreach ($f in $Files) {
+        $path = $f[0]; $mediaType = $f[1]
+        try { $size = (Get-Item -LiteralPath $path -ErrorAction Stop).Length } catch { continue }
+        $payload = [ordered]@{ media_type = $mediaType; tool = $Tool; channel = 'claude_code' }
+        if ($size -gt $max) {
+            $payload['unreadable'] = "file over $([int64][math]::Floor($max / 1048576)) MB"
+        } else {
+            try { $payload['data'] = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($path)) } catch { continue }
+        }
+        $result = Invoke-FileService '/v1/guardrails/evaluate-file' $payload
+        if ((Get-Decision $result) -ceq 'block') {
+            Exit-PreTool 'deny' (Get-Message $result 'message' "$Shield [AgentGuards] File blocked")
+        }
+    }
+}
+
 # Never answers "allow": a clean file exits silently so Claude Code's own permission
 # prompt still applies. Only a scan verdict (or a fail-closed outage) denies.
 function Invoke-FileRead($Evt) {
@@ -839,34 +928,19 @@ function Invoke-FileRead($Evt) {
     $raw = Get-Prop $toolInput 'file_path' ''
     $path = ''
     if (Test-PyTruthy $raw) { $path = [string]$raw }
-    $ext = [System.IO.Path]::GetExtension($path).ToLowerInvariant()
-    if (-not $FileTypes.ContainsKey($ext)) { Exit-Allow }
-    $mediaType = $FileTypes[$ext]
-    if (-not [System.IO.Path]::IsPathRooted($path)) {
-        $cwd = ''
-        $c = Get-Prop $Evt 'cwd'
-        if (Test-PyTruthy $c) { $cwd = [string]$c } else { $cwd = (Get-Location).Path }
-        $path = Join-Path $cwd $path
-    }
-    # Missing, or not a file: Read reports that itself, nothing reaches the model.
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { Exit-Allow }
-    try { $size = (Get-Item -LiteralPath $path -ErrorAction Stop).Length } catch { Exit-Allow }
-
-    $policy = Get-CachedFilePolicy
-    if (-not (Test-PyTruthy (Get-Prop $policy 'scan_files' $true))) { Exit-Allow }
-    $max = Get-Prop $policy 'max_bytes'
-    if (-not (Test-PyTruthy $max)) { $max = $FileMaxBytes }
-    $max = [int64]$max
-    $payload = [ordered]@{ media_type = $mediaType; tool = 'Read'; channel = 'claude_code' }
-    if ($size -gt $max) {
-        $payload['unreadable'] = "file over $([int64][math]::Floor($max / 1048576)) MB"
-    } else {
-        try { $payload['data'] = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($path)) } catch { Exit-Allow }
-    }
-    $result = Invoke-FileService '/v1/guardrails/evaluate-file' $payload
-    if ((Get-Decision $result) -ceq 'block') {
-        Exit-PreTool 'deny' (Get-Message $result 'message' "$Shield [AgentGuards] File blocked")
-    }
+    $mediaType = Get-MediaType $path
+    if ($null -eq $mediaType) { Exit-Allow }
+    try {
+        if (-not [System.IO.Path]::IsPathRooted($path)) {
+            $cwd = ''
+            $c = Get-Prop $Evt 'cwd'
+            if (Test-PyTruthy $c) { $cwd = [string]$c } else { $cwd = (Get-Location).Path }
+            $path = [System.IO.Path]::Combine($cwd, $path)
+        }
+        # Missing, or not a file: Read reports that itself, nothing reaches the model.
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { Exit-Allow }
+    } catch { Exit-Allow }  # a name 5.1 can't even parse as a path is not a file
+    Invoke-ScanLocalFiles @(, @($path, $mediaType)) 'Read'
     Exit-Allow
 }
 
@@ -884,6 +958,11 @@ function Invoke-PreToolUse($Evt) {
     $raw = Get-Prop $toolInput 'command' ''
     $command = Get-CommandText $raw
     $session = Get-SessionId $Evt
+    # Images/PDFs the command reads: scan them first (mirrors the Python hook).
+    $cwdArg = ''
+    $c = Get-Prop $Evt 'cwd'
+    if (Test-PyTruthy $c) { $cwdArg = [string]$c } else { $cwdArg = (Get-Location).Path }
+    Invoke-ScanLocalFiles (Get-CommandMediaFiles $command $cwdArg) 'Bash'
     if (Test-FetchCommand $command) {
         # The message only: the blocked URL may itself be the secret being leaked.
         $message = Get-UrlBlockMessage (Get-ToolUrls 'Bash' $toolInput) 'Bash'

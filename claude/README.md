@@ -114,7 +114,7 @@ Checking content means sending it to AgentGuards. The hooks send these to
 | Before a web fetch (WebFetch, `curl`/`wget`, MCP fetch tools) | The URL(s) |
 | After a web fetch | The fetched page or tool output |
 | After Claude writes or edits a file | The file's path and new content |
-| Before Claude opens an image or PDF (`Read` of `.png` `.jpg` `.jpeg` `.gif` `.webp` `.pdf`) | The file itself, up to 5 MB (larger files: only its type and that it was too large). Not stored. Nothing is sent if your account has turned file scanning off on the Checks page. |
+| Before Claude opens an image or PDF (`Read` of `.png` `.jpg` `.jpeg` `.gif` `.webp` `.pdf`, or a Bash command that names one, e.g. `pdftotext report.pdf`) | The file itself, up to 5 MB (larger files: only its type and that it was too large). Not stored. Nothing is sent if your account has turned file scanning off on the Checks page. |
 
 Nothing is sent anywhere else, and the hooks send nothing when no API key is
 set. The hooks read your key from `AGENTGUARDS_API_KEY`, the plugin's

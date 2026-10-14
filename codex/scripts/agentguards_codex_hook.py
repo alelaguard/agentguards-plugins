@@ -41,6 +41,7 @@ Environment overrides:
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -64,7 +65,7 @@ for _stream in (sys.stdout, sys.stderr):
 AGENTGUARDS_URL = os.getenv("AGENTGUARDS_URL", "https://prod.agentguards.co").rstrip("/")
 # This plugin's version, sent with every request ("codex/py/<version>") so the API
 # can tell an outdated plugin how to update. Must equal plugin.json (a test checks).
-_PLUGIN_VERSION = "0.2.24"
+_PLUGIN_VERSION = "0.2.25"
 
 # Per-session approval cache. A command reaching PostToolUse actually ran (= it
 # was approved), so we remember its binaries keyed by session_id and skip
@@ -1427,6 +1428,193 @@ def handle_user_prompt(event: dict) -> None:
     _continue()
 
 
+# --- Images and PDFs scanned before the model sees them ------------------------------
+# view_image (Codex's built-in image tool) and shell commands that read a local image or
+# PDF (`pdftotext report.pdf -`) both go through /v1/guardrails/evaluate-file first:
+# hidden text in a picture or a document is how instructions get smuggled in. Mirrors
+# the Claude Code hook's Read handling (same endpoints, same off switch).
+_FILE_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".pdf": "application/pdf",
+}
+_FILE_POLICY_PATH = str(Path.home() / ".codex" / "agentguards_file_policy.json")
+_FILE_POLICY_TTL = 300  # seconds; a tenant who turns scanning off waits at most this long
+_FILE_POLICY_VERSION = 1
+_FILE_MAX_BYTES = 5 * 1024 * 1024  # used only if the server does not say
+_MEDIA_TOKEN_SPLIT = re.compile(r"[\s|;&<>()`]+")
+_QUOTED_MEDIA = re.compile(r"""(["'])([^"']*?\.(?:png|jpe?g|gif|webp|pdf))\1""", re.I)
+_SHELL_MEDIA_MAX = 3
+_FILE_BLOCKED = "\N{SHIELD}\N{VARIATION SELECTOR-16} [AgentGuards] File blocked"
+# An outage is not a verdict about the file: say it was not opened, not "blocked".
+_FILE_NOT_OPENED = "\N{SHIELD}\N{VARIATION SELECTOR-16} [AgentGuards] File not opened"
+
+
+def _media_type(path: str) -> str | None:
+    return _FILE_TYPES.get(os.path.splitext(path)[1].lower())
+
+
+def _file_service(path: str, payload: dict | None = None) -> dict:
+    """Call the file-scan API; turn every failure into the hook's decision.
+
+    Kept apart from the file I/O on purpose: urllib's network and HTTP errors are
+    OSError subclasses, so one try around both would treat an outage like a missing
+    file — silently continuing, i.e. failing open. 50 s stays inside Codex's hook timeout.
+    """
+    try:
+        return _post(path, payload or {}, timeout=50 if payload else 10)
+    except QuotaExceededError as exc:
+        _deny(f"AgentGuards request quota reached: {exc.user_message}")
+    except ForbiddenError:
+        _continue()  # file scanning not available to this account
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            _continue()  # an AgentGuards server from before file scanning
+        if _fail_open():
+            _continue()
+        _deny(f"{_FILE_NOT_OPENED}\nAgentGuards could not scan it (HTTP {exc.code}) and the hook is fail-closed.")
+    except Exception as exc:
+        if _fail_open():
+            print(f"AgentGuards: service unreachable ({exc}), allowing file read (AGENTGUARDS_FAIL_OPEN=true)", file=sys.stderr)
+            _continue()
+        _deny(f"{_FILE_NOT_OPENED}\nAgentGuards is unreachable ({exc}) and the hook is fail-closed. "
+              f"{_unreachable_remedy(exc)}")
+    raise AssertionError("unreachable")  # every branch above exits
+
+
+def _cached_file_policy() -> dict:
+    """Whether to send files at all — the tenant's off switch, asked BEFORE uploading."""
+    owner = hashlib.sha256(f"{AGENTGUARDS_URL}|{_api_key()}".encode()).hexdigest()[:16]
+    try:
+        with open(_FILE_POLICY_PATH) as fh:
+            cached = json.load(fh)
+        if (
+            isinstance(cached, dict)
+            and cached.get("v") == _FILE_POLICY_VERSION
+            and cached.get("owner") == owner
+            and time.time() - float(cached.get("at", 0)) < _FILE_POLICY_TTL
+            and isinstance(cached.get("policy"), dict)
+        ):
+            return cached["policy"]
+    except (OSError, ValueError, TypeError):
+        pass
+    policy = _file_service("/v1/guardrails/file-scan-policy")
+    try:
+        os.makedirs(os.path.dirname(_FILE_POLICY_PATH), exist_ok=True)
+        with open(_FILE_POLICY_PATH, "w") as fh:
+            json.dump({"v": _FILE_POLICY_VERSION, "owner": owner, "at": time.time(),
+                       "policy": policy}, fh)
+    except OSError:
+        pass
+    return policy
+
+
+# Commands that never put a file's CONTENT in front of the model: when every part of a
+# command line is one of these (`git add logo.png`, `cp a.png b/`), nothing is scanned —
+# scanning there cost seconds and quota for nothing. Splitting is deliberately crude
+# (on | ; & and newlines, quotes ignored): a wrong split can only make a command look
+# like it reads more, so the error is always towards scanning. Command substitution
+# always scans, and git only for the subcommands below (`git show x.pdf` prints it).
+_NON_READING = {
+    "ls", "cp", "mv", "rm", "mkdir", "rmdir", "touch", "chmod", "chown", "ln", "du",
+    "stat", "file", "wc", "open", "xdg-open",
+    "dir", "copy", "move", "del", "ren", "copy-item", "move-item", "remove-item",
+    "rename-item", "get-childitem", "get-item", "new-item",
+}
+_GIT_NON_READING = {"add", "mv", "rm", "status", "commit", "restore", "checkout", "stash", "ls-files"}
+_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def _only_non_reading(command: str) -> bool:
+    if any(s in (command or "") for s in ("$(", "`", "<(")):
+        return False
+    for part in re.split(r"[|;&\n]+", command or ""):
+        words = [w for w in part.split() if not _ASSIGNMENT.match(w)]
+        if not words:
+            continue
+        name = re.split(r"[\\/]", words[0])[-1].lower()
+        if name.endswith(".exe"):
+            name = name[:-4]
+        if name == "git":
+            if len(words) < 2 or words[1].lower() not in _GIT_NON_READING:
+                return False
+        elif name not in _NON_READING:
+            return False
+    return True
+
+
+def _command_media_files(command: str, cwd: str) -> list[tuple[str, str]]:
+    """Existing local images/PDFs a shell command names (same rule as the Claude hook)."""
+    text = command or ""
+    if _only_non_reading(text):
+        return []
+    candidates: list[str] = [m.group(2) for m in _QUOTED_MEDIA.finditer(text)]
+    rest = _QUOTED_MEDIA.sub(" ", text)
+    for token in _MEDIA_TOKEN_SPLIT.split(rest):
+        token = token.split("=")[-1]
+        if token and _media_type(token):
+            candidates.append(token)
+    found: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for c in candidates:
+        path = _resolve_path(cwd, c)  # ~ / $HOME / $env:USERPROFILE, like download targets
+        if path in seen or not os.path.isfile(path):
+            continue
+        seen.add(path)
+        found.append((path, _media_type(path)))
+        if len(found) >= _SHELL_MEDIA_MAX:
+            break
+    return found
+
+
+def _scan_local_files(files: list[tuple[str, str]], tool: str) -> None:
+    """Scan images/PDFs before the agent reads them; deny on the first block."""
+    if not files:
+        return
+    policy = _cached_file_policy()
+    if not policy.get("scan_files", True):
+        return
+    max_bytes = int(policy.get("max_bytes") or _FILE_MAX_BYTES)
+    for path, media_type in files:
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            continue
+        payload: dict = {"media_type": media_type, "tool": tool, "channel": "codex"}
+        if size > max_bytes:
+            payload["unreadable"] = f"file over {max_bytes // (1024 * 1024)} MB"
+        else:
+            try:
+                with open(path, "rb") as fh:
+                    payload["data"] = base64.b64encode(fh.read()).decode("ascii")
+            except OSError:
+                continue
+        result = _file_service("/v1/guardrails/evaluate-file", payload)
+        if result.get("decision") == "block":
+            _deny(result.get("message") or _FILE_BLOCKED)
+
+
+def handle_view_image(event: dict) -> None:
+    """PreToolUse for view_image: scan the image before the model sees it."""
+    raw = (event.get("tool_input") or {}).get("path")
+    path = str(raw or "")
+    media_type = _media_type(path)
+    if not media_type:
+        _continue()
+    path = _resolve_path(_event_cwd(event), path)
+    if _touches_quarantine(path, _event_cwd(event)):
+        _deny("🛡️ [AgentGuards] Quarantined download — access blocked\n"
+              f"Files in {_QUARANTINE_SHOWN} are downloads AgentGuards withheld; only the user "
+              "may open them.")
+    if not os.path.isfile(path):
+        _continue()  # view_image reports a missing file itself
+    _scan_local_files([(path, media_type)], "view_image")
+    _continue()
+
+
 def handle_pre_tool_use(event: dict) -> None:
     tool_name = event.get("tool_name", "")
     tool_input = event.get("tool_input", {}) or {}
@@ -1441,12 +1629,18 @@ def handle_pre_tool_use(event: dict) -> None:
         if message:
             _deny(message)
         _continue()
+    if tool_name == "view_image":
+        handle_view_image(event)
     if not command:
         _continue()
     if _touches_quarantine(command, _event_cwd(event)):
         _deny("🛡️ [AgentGuards] Quarantined download — access blocked\n"
               f"Files in {_QUARANTINE_SHOWN} are downloads AgentGuards withheld; only the user "
               "may open them. Fetch a different source or ask the user.")
+    # Images/PDFs the command reads (`pdftotext report.pdf -`): their text reaches the
+    # model through the output, so scan them first. After the quarantine check, so a
+    # withheld download is never uploaded.
+    _scan_local_files(_command_media_files(command, _event_cwd(event)), tool_name or "shell")
     if _is_web_command(command):
         # The message only: the blocked URL may itself be the secret being leaked.
         message = _url_block_message(_web_command_urls(command), tool_name or "Bash")

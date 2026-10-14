@@ -118,7 +118,7 @@ def _installer_key() -> str:
 AGENTGUARDS_URL = (os.getenv("AGENTGUARDS_URL") or "https://prod.agentguards.co").rstrip("/")
 # This plugin's version, sent with every request ("claude-code/py/<version>") so the API
 # can tell an outdated plugin how to update. Must equal plugin.json (a test checks).
-_PLUGIN_VERSION = "0.2.38"
+_PLUGIN_VERSION = "0.2.39"
 AGENTGUARDS_API_KEY = (
     os.getenv("AGENTGUARDS_API_KEY")
     or os.getenv("CLAUDE_PLUGIN_OPTION_AGENTGUARDS_API_KEY")
@@ -919,6 +919,112 @@ AgentGuards is unreachable ({exc}) and the hook is fail-closed.
     raise AssertionError("unreachable")  # every branch above exits
 
 
+_MEDIA_TOKEN_SPLIT = re.compile(r"[\s|;&<>()`]+")
+_QUOTED_MEDIA = re.compile(r"""(["'])([^"']*?\.(?:png|jpe?g|gif|webp|pdf))\1""", re.I)
+_SHELL_MEDIA_MAX = 3
+
+
+def _media_type(path: str) -> str | None:
+    return _FILE_TYPES.get(os.path.splitext(path)[1].lower())
+
+
+# Commands that never put a file's CONTENT in front of the model: when every part of a
+# command line is one of these (`git add logo.png`, `cp a.png b/`), nothing is scanned —
+# scanning there cost seconds and quota for nothing. Splitting is deliberately crude
+# (on | ; & and newlines, quotes ignored): a wrong split can only make a command look
+# like it reads more, so the error is always towards scanning. Command substitution
+# always scans, and git only for the subcommands below (`git show x.pdf` prints it).
+_NON_READING = {
+    "ls", "cp", "mv", "rm", "mkdir", "rmdir", "touch", "chmod", "chown", "ln", "du",
+    "stat", "file", "wc", "open", "xdg-open",
+    "dir", "copy", "move", "del", "ren", "copy-item", "move-item", "remove-item",
+    "rename-item", "get-childitem", "get-item", "new-item",
+}
+_GIT_NON_READING = {"add", "mv", "rm", "status", "commit", "restore", "checkout", "stash", "ls-files"}
+_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def _only_non_reading(command: str) -> bool:
+    if any(s in (command or "") for s in ("$(", "`", "<(")):
+        return False
+    for part in re.split(r"[|;&\n]+", command or ""):
+        words = [w for w in part.split() if not _ASSIGNMENT.match(w)]
+        if not words:
+            continue
+        name = re.split(r"[\\/]", words[0])[-1].lower()
+        if name.endswith(".exe"):
+            name = name[:-4]
+        if name == "git":
+            if len(words) < 2 or words[1].lower() not in _GIT_NON_READING:
+                return False
+        elif name not in _NON_READING:
+            return False
+    return True
+
+
+def _command_media_files(command: str, cwd: str) -> list[tuple[str, str]]:
+    """Existing local images/PDFs a shell command names: `pdftotext report.pdf -`.
+
+    Deliberately simple and identical in the PowerShell port: quoted strings, then bare
+    words, that end in a media extension; `--opt=file.pdf` counts the part after "=".
+    Each is resolved against the command's directory (or ~) and kept only if it is an
+    existing file. At most _SHELL_MEDIA_MAX, in order of appearance.
+    """
+    text = command or ""
+    if _only_non_reading(text):
+        return []
+    candidates: list[str] = [m.group(2) for m in _QUOTED_MEDIA.finditer(text)]
+    rest = _QUOTED_MEDIA.sub(" ", text)
+    for token in _MEDIA_TOKEN_SPLIT.split(rest):
+        token = token.split("=")[-1]
+        if token and _media_type(token):
+            candidates.append(token)
+    found: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for c in candidates:
+        if c.startswith("~"):
+            c = os.path.expanduser("~") + c[1:]
+        path = os.path.normpath(os.path.join(cwd, c))
+        if path in seen or not os.path.isfile(path):
+            continue
+        seen.add(path)
+        found.append((path, _media_type(path)))
+        if len(found) >= _SHELL_MEDIA_MAX:
+            break
+    return found
+
+
+def _scan_local_files(files: list[tuple[str, str]], tool: str) -> None:
+    """Scan images/PDFs before the agent reads them; deny on the first block.
+
+    Returns when every file is clean (or scanning is off): the caller decides what
+    happens next. Never answers "allow".
+    """
+    if not files:
+        return
+    policy = _cached_file_policy()
+    if not policy.get("scan_files", True):
+        return
+    max_bytes = int(policy.get("max_bytes") or _FILE_MAX_BYTES)
+    for path, media_type in files:
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            continue
+        payload: dict = {"media_type": media_type, "tool": tool, "channel": "claude_code"}
+        if size > max_bytes:
+            payload["unreadable"] = f"file over {max_bytes // (1024 * 1024)} MB"
+        else:
+            try:
+                with open(path, "rb") as fh:
+                    payload["data"] = base64.b64encode(fh.read()).decode("ascii")
+            except OSError:
+                continue  # vanished or unreadable since the size check
+        result = _file_service("/v1/guardrails/evaluate-file", payload)
+        if result.get("decision") == "block":
+            _pre_tool("deny", result.get("message") or "\N{SHIELD}\N{VARIATION SELECTOR-16} [AgentGuards] File blocked")
+
+
 def handle_file_read(event: dict) -> None:
     """PreToolUse for Read: scan an image or PDF before the model sees it.
 
@@ -927,34 +1033,14 @@ def handle_file_read(event: dict) -> None:
     """
     tool_input = event.get("tool_input", {}) or {}
     path = str(tool_input.get("file_path") or "")
-    media_type = _FILE_TYPES.get(os.path.splitext(path)[1].lower())
+    media_type = _media_type(path)
     if not media_type:
         _allow()
     if not os.path.isabs(path):
         path = os.path.join(str(event.get("cwd") or os.getcwd()), path)
     if not os.path.isfile(path):
         _allow()  # missing, or not a file: Read reports that itself, nothing reaches the model
-    try:
-        size = os.path.getsize(path)
-    except OSError:
-        _allow()
-
-    policy = _cached_file_policy()
-    if not policy.get("scan_files", True):
-        _allow()
-    max_bytes = int(policy.get("max_bytes") or _FILE_MAX_BYTES)
-    payload: dict = {"media_type": media_type, "tool": "Read", "channel": "claude_code"}
-    if size > max_bytes:
-        payload["unreadable"] = f"file over {max_bytes // (1024 * 1024)} MB"
-    else:
-        try:
-            with open(path, "rb") as fh:
-                payload["data"] = base64.b64encode(fh.read()).decode("ascii")
-        except OSError:
-            _allow()  # vanished or unreadable since the size check: Read will say so
-    result = _file_service("/v1/guardrails/evaluate-file", payload)
-    if result.get("decision") == "block":
-        _pre_tool("deny", result.get("message") or "\N{SHIELD}\N{VARIATION SELECTOR-16} [AgentGuards] File blocked")
+    _scan_local_files([(path, media_type)], "Read")
     _allow()
 
 
@@ -978,6 +1064,13 @@ def handle_pre_tool_use(event: dict) -> None:
 
     command = tool_input.get("command", "")
     session_id = event.get("session_id", "")
+    # Images/PDFs the command reads (pdftotext report.pdf, a script given logo.png):
+    # their text reaches the model through the output, so scan them first.
+    _scan_local_files(
+        _command_media_files(command if isinstance(command, str) else "",
+                             str(event.get("cwd") or os.getcwd())),
+        "Bash",
+    )
     if _is_fetch_command(command):
         # The message only: the blocked URL may itself be the secret being leaked.
         message = _url_block_message(_tool_urls("Bash", tool_input), "Bash")

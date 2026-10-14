@@ -34,6 +34,13 @@ ahead). After the fetch, instructions hidden from a human reader (HTML comments,
 invisible text, …) are removed and the rest of the page is passed on with a note; a
 page with a visible instruction aimed at the agent is withheld.
 
+**Images and PDFs**: before Codex opens an image with `view_image`, and before a shell
+command that names a local image or PDF runs (`pdftotext report.pdf -`, a script given
+`logo.png`), the file is sent to AgentGuards and scanned for hidden instructions
+(white-on-white, faint or tiny text); a flagged file is denied. Files up to 5 MB are sent
+and not stored; for a larger one only its type and that it was too large are sent.
+Nothing is sent when your account has turned file scanning off on the Checks page.
+
 **Downloaded files** (`curl -o`/`-O`, `wget`, `> file`, `tee`; on Windows `-OutFile`,
 `-Destination`, `| Out-File`/`Set-Content`, `WebClient.DownloadFile`): the files a fetch
 command just wrote are scanned too, since a later `cat`, `grep -r` or editor would

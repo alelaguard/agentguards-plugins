@@ -511,7 +511,7 @@ function Read-Event {
 # --- Codex-specific ---------------------------------------------------------------------
 
 # This plugin's version (must equal plugin.json; a test checks), sent as codex/ps1/<version>.
-$PluginVersion = '0.2.24'
+$PluginVersion = '0.2.25'
 $script:ClientName = 'codex/ps1/' + $PluginVersion
 # os.getenv(name, default): the default applies only when UNSET, as in the Python hook.
 $script:AgentGuardsUrl = $env:AGENTGUARDS_URL
@@ -1459,6 +1459,165 @@ function Invoke-Authorize($Ctx) {
             }))
 }
 
+# --- Images and PDFs scanned before the model sees them ------------------------------
+# Mirrors _file_service / _cached_file_policy / _command_media_files / _scan_local_files /
+# handle_view_image in agentguards_codex_hook.py.
+$FileTypes = @{ '.png' = 'image/png'; '.jpg' = 'image/jpeg'; '.jpeg' = 'image/jpeg'; '.gif' = 'image/gif'; '.webp' = 'image/webp'; '.pdf' = 'application/pdf' }
+$script:FilePolicyPath = Join-Path (Join-Path (Get-HomeDir) '.codex') 'agentguards_file_policy.json'
+$FilePolicyTtl = 300
+$FileMaxBytes = 5 * 1024 * 1024
+$QuotedMedia = [regex]::new('(["''])([^"'']*?\.(?:png|jpe?g|gif|webp|pdf))\1', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+$ShellMediaMax = 3
+$FileBlocked = "$Shield [AgentGuards] File blocked"
+$FileNotOpened = "$Shield [AgentGuards] File not opened"
+
+function Get-MediaType([string]$Path) {
+    $ext = ''
+    try { $ext = [System.IO.Path]::GetExtension($Path).ToLowerInvariant() } catch { return $null }
+    if ($FileTypes.ContainsKey($ext)) { return $FileTypes[$ext] }
+    return $null
+}
+
+function Invoke-FileService([string]$Path, $Payload) {
+    $timeout = 50
+    if ($null -eq $Payload) { $Payload = [ordered]@{}; $timeout = 10 }
+    try {
+        return (Invoke-AgentGuards $Path $Payload $timeout)
+    } catch [AgentGuardsQuotaError] {
+        Exit-Deny "AgentGuards request quota reached: $($_.Exception.UserMessage)"
+    } catch [AgentGuardsForbiddenError] {
+        Exit-Continue
+    } catch {
+        $inner = Get-Inner $_
+        if ($inner -is [AgentGuardsHttpError]) {
+            if ($inner.StatusCode -eq 404) { Exit-Continue }
+            if (Test-FailOpen) { Exit-Continue }
+            Exit-Deny "$FileNotOpened`nAgentGuards could not scan it (HTTP $($inner.StatusCode)) and the hook is fail-closed."
+        }
+        $err = Get-ErrorText $_
+        if (Test-FailOpen) {
+            Write-Err "AgentGuards: service unreachable ($err), allowing file read (AGENTGUARDS_FAIL_OPEN=true)"
+            Exit-Continue
+        }
+        Exit-Deny "$FileNotOpened`nAgentGuards is unreachable ($err) and the hook is fail-closed. $(Get-UnreachableRemedy $_)"
+    }
+}
+
+function Get-FilePolicyOwner {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $hash = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes("$($script:AgentGuardsUrl)|$(Get-ApiKey)"))
+    return (([System.BitConverter]::ToString($hash) -replace '-', '').ToLowerInvariant()).Substring(0, 16)
+}
+
+function Get-CachedFilePolicy {
+    $owner = Get-FilePolicyOwner
+    try {
+        if (Test-Path -LiteralPath $script:FilePolicyPath) {
+            $c = [System.IO.File]::ReadAllText($script:FilePolicyPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+            $at = Get-Prop $c 'at' 0
+            $v = Get-Prop $c 'v'
+            if ((Test-IsObject $c) -and (Test-IsNumber $v) -and ([double]$v -eq 1) -and ((Get-Prop $c 'owner') -ceq $owner) -and
+                (Test-IsNumber $at) -and (((Get-NowSeconds) - [double]$at) -lt $FilePolicyTtl) -and (Test-IsObject (Get-Prop $c 'policy'))) {
+                return (Get-Prop $c 'policy')
+            }
+        }
+    } catch { }
+    $policy = Invoke-FileService '/v1/guardrails/file-scan-policy' $null
+    try {
+        $dir = Split-Path -Parent $script:FilePolicyPath
+        if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+        $json = [ordered]@{ v = 1; owner = $owner; at = (Get-NowSeconds); policy = $policy } | ConvertTo-Json -Depth 20 -Compress
+        [System.IO.File]::WriteAllText($script:FilePolicyPath, $json, [System.Text.UTF8Encoding]::new($false))
+    } catch { }
+    return $policy
+}
+
+# Mirrors _NON_READING / _only_non_reading in the Python hook.
+$NonReading = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+foreach ($n in @('ls', 'cp', 'mv', 'rm', 'mkdir', 'rmdir', 'touch', 'chmod', 'chown', 'ln', 'du',
+                 'stat', 'file', 'wc', 'open', 'xdg-open',
+                 'dir', 'copy', 'move', 'del', 'ren', 'copy-item', 'move-item', 'remove-item',
+                 'rename-item', 'get-childitem', 'get-item', 'new-item')) { [void]$NonReading.Add($n) }
+$GitNonReading = @('add', 'mv', 'rm', 'status', 'commit', 'restore', 'checkout', 'stash', 'ls-files')
+function Test-OnlyNonReading([string]$Command) {
+    $text = $Command
+    if ($null -eq $text) { $text = '' }
+    if ($text.Contains('$(') -or $text.Contains('`') -or $text.Contains('<(')) { return $false }
+    foreach ($part in [regex]::Split($text, '[|;&\n]+')) {
+        $words = @($part.Split([char[]]@(' ', "`t", "`r", "`f", "`v"), [System.StringSplitOptions]::RemoveEmptyEntries) |
+            Where-Object { $_ -cnotmatch '^[A-Za-z_][A-Za-z0-9_]*=' })
+        if ($words.Count -eq 0) { continue }
+        $name = ([regex]::Split($words[0], '[\\/]'))[-1].ToLowerInvariant()
+        if ($name.EndsWith('.exe')) { $name = $name.Substring(0, $name.Length - 4) }
+        if ($name -eq 'git') {
+            if ($words.Count -lt 2 -or -not ($GitNonReading -contains $words[1].ToLowerInvariant())) { return $false }
+        } elseif (-not $NonReading.Contains($name)) { return $false }
+    }
+    return $true
+}
+
+function Get-CommandMediaFiles([string]$Command, [string]$Cwd) {
+    $text = $Command
+    if ($null -eq $text) { $text = '' }
+    if (Test-OnlyNonReading $text) { return , (New-Object System.Collections.Generic.List[object]) }
+    $candidates = New-Object System.Collections.Generic.List[string]
+    foreach ($m in $QuotedMedia.Matches($text)) { $candidates.Add($m.Groups[2].Value) }
+    $rest = $QuotedMedia.Replace($text, ' ')
+    foreach ($token in [regex]::Split($rest, '[\s|;&<>()`]+')) {
+        $t = $token.Split('=')[-1]
+        if ($t.Length -gt 0 -and $null -ne (Get-MediaType $t)) { $candidates.Add($t) }
+    }
+    $found = New-Object System.Collections.Generic.List[object]
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+    foreach ($c in $candidates) {
+        $path = Resolve-CommandPath $Cwd $c
+        if ($null -eq $path) { continue }
+        if ($seen.Contains($path) -or -not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+        [void]$seen.Add($path)
+        $found.Add(@($path, (Get-MediaType $path)))
+        if ($found.Count -ge $ShellMediaMax) { break }
+    }
+    return , $found
+}
+
+function Invoke-ScanLocalFiles($Files, [string]$Tool) {
+    if ($null -eq $Files -or $Files.Count -eq 0) { return }
+    $policy = Get-CachedFilePolicy
+    if (-not (Test-PyTruthy (Get-Prop $policy 'scan_files' $true))) { return }
+    $max = Get-Prop $policy 'max_bytes'
+    if (-not (Test-PyTruthy $max)) { $max = $FileMaxBytes }
+    $max = [int64]$max
+    foreach ($f in $Files) {
+        $path = $f[0]; $mediaType = $f[1]
+        try { $size = (Get-Item -LiteralPath $path -ErrorAction Stop).Length } catch { continue }
+        $payload = [ordered]@{ media_type = $mediaType; tool = $Tool; channel = 'codex' }
+        if ($size -gt $max) {
+            $payload['unreadable'] = "file over $([int64][math]::Floor($max / 1048576)) MB"
+        } else {
+            try { $payload['data'] = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($path)) } catch { continue }
+        }
+        $result = Invoke-FileService '/v1/guardrails/evaluate-file' $payload
+        if ((Get-Decision $result) -ceq 'block') { Exit-Deny (Get-Message $result 'message' $FileBlocked) }
+    }
+}
+
+function Invoke-ViewImage($Evt) {
+    $raw = Get-Prop (Get-Prop $Evt 'tool_input') 'path'
+    $path = ''
+    if (Test-PyTruthy $raw) { $path = [string]$raw }
+    $mediaType = Get-MediaType $path
+    if ($null -eq $mediaType) { Exit-Continue }
+    $cwd = Get-EventCwd $Evt
+    $resolved = Resolve-CommandPath $cwd $path
+    if ($null -eq $resolved) { Exit-Continue }
+    if (Test-TouchesQuarantine $resolved $cwd) {
+        Exit-Deny "$Shield [AgentGuards] Quarantined download $EmDash access blocked`nFiles in $QuarantineShown are downloads AgentGuards withheld; only the user may open them."
+    }
+    if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) { Exit-Continue }
+    Invoke-ScanLocalFiles @(, @($resolved, $mediaType)) 'view_image'
+    Exit-Continue
+}
+
 function Invoke-PreToolUse($Evt) {
     $ctx = Get-ToolContext $Evt
     # Web scan v2: stop a fetch whose URL carries a secret, targets a cloud metadata
@@ -1469,10 +1628,15 @@ function Invoke-PreToolUse($Evt) {
         if ($null -ne $message) { Exit-Deny $message }
         Exit-Continue
     }
+    if ($toolName -ceq 'view_image') { Invoke-ViewImage $Evt }
     if ($ctx.Command.Length -eq 0) { Exit-Continue }
     if (Test-TouchesQuarantine $ctx.Command (Get-EventCwd $Evt)) {
         Exit-Deny "$Shield [AgentGuards] Quarantined download $EmDash access blocked`nFiles in $QuarantineShown are downloads AgentGuards withheld; only the user may open them. Fetch a different source or ask the user."
     }
+    # Images/PDFs the command reads: scan them first (after the quarantine check).
+    $scanTool = $toolName
+    if ([string]::IsNullOrEmpty($scanTool)) { $scanTool = 'shell' }
+    Invoke-ScanLocalFiles (Get-CommandMediaFiles $ctx.Command (Get-EventCwd $Evt)) $scanTool
     if (Test-WebCommand $ctx.Command) {
         # The message only: the blocked URL may itself be the secret being leaked.
         $urlTool = $toolName
