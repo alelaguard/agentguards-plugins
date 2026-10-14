@@ -10,7 +10,7 @@ fail-open (availability-first) with a single environment variable.
 
 | Plugin | Agent | Deployment | Version | Description |
 |---|---|---|---|---|
-| [`agentguards-claude`](./claude) | Claude Code | hosted | `0.2.37` | Enforcing hooks (input, Bash, web-content with pre-fetch URL check, code scan). No MCP server. |
+| [`agentguards-claude`](./claude) | Claude Code | hosted | `0.2.38` | Enforcing hooks (input, Bash, web-content with pre-fetch URL check, image/PDF scan before Read, code scan). No MCP server. |
 | [`agentguards-codex`](./codex) | OpenAI Codex | hosted | `0.2.24` | Enforcing hooks (input, shell, web-content with pre-fetch URL check, code scan). No MCP server. |
 | [`agentguards-gemini`](./gemini) | Gemini CLI | hosted | `0.1.10` | MCP server + enforcing hooks (input, tool-call, web-content with pre-fetch URL check) and security instructions. |
 | [`agentguards-copilot`](./copilot) | GitHub Copilot CLI | hosted | `0.1.9` | MCP server + enforcing hooks (input, shell, web-content with pre-fetch URL check) and security instructions. |

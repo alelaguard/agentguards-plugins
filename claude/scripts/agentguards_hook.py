@@ -78,6 +78,7 @@ Do not port a default URL into that plugin.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -117,7 +118,7 @@ def _installer_key() -> str:
 AGENTGUARDS_URL = (os.getenv("AGENTGUARDS_URL") or "https://prod.agentguards.co").rstrip("/")
 # This plugin's version, sent with every request ("claude-code/py/<version>") so the API
 # can tell an outdated plugin how to update. Must equal plugin.json (a test checks).
-_PLUGIN_VERSION = "0.2.37"
+_PLUGIN_VERSION = "0.2.38"
 AGENTGUARDS_API_KEY = (
     os.getenv("AGENTGUARDS_API_KEY")
     or os.getenv("CLAUDE_PLUGIN_OPTION_AGENTGUARDS_API_KEY")
@@ -836,9 +837,133 @@ AgentGuards is unreachable ({exc}) and the hook is fail-closed.
     _allow()
 
 
+# Images and PDFs the agent opens with Read are scanned BEFORE the model sees them:
+# hidden text (white-on-white, faint, tiny) is how instructions get smuggled into a
+# picture or a document. By extension, the way Read itself decides a file is an image.
+_FILE_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".pdf": "application/pdf",
+}
+_FILE_POLICY_PATH = os.path.expanduser("~/.claude/agentguards_file_policy.json")
+_FILE_POLICY_TTL = 300  # seconds; a tenant who turns scanning off waits at most this long
+_FILE_POLICY_VERSION = 1
+_FILE_MAX_BYTES = 5 * 1024 * 1024  # used only if the server does not say
+
+
+def _cached_file_policy() -> dict:
+    """Whether to send files at all — the tenant's off switch, asked BEFORE uploading.
+
+    Cached for a few minutes per (URL, key) so every image read doesn't cost a round
+    trip. A failure to ask is handled like any other service failure (_file_service).
+    """
+    owner = hashlib.sha256(f"{AGENTGUARDS_URL}|{AGENTGUARDS_API_KEY}".encode()).hexdigest()[:16]
+    try:
+        with open(_FILE_POLICY_PATH) as fh:
+            cached = json.load(fh)
+        if (
+            isinstance(cached, dict)
+            and cached.get("v") == _FILE_POLICY_VERSION
+            and cached.get("owner") == owner
+            and time.time() - float(cached.get("at", 0)) < _FILE_POLICY_TTL
+            and isinstance(cached.get("policy"), dict)
+        ):
+            return cached["policy"]
+    except (OSError, ValueError, TypeError):
+        pass
+    policy = _file_service("/v1/guardrails/file-scan-policy")
+    try:
+        os.makedirs(os.path.dirname(_FILE_POLICY_PATH), exist_ok=True)
+        with open(_FILE_POLICY_PATH, "w") as fh:
+            json.dump({"v": _FILE_POLICY_VERSION, "owner": owner, "at": time.time(),
+                       "policy": policy}, fh)
+    except OSError:
+        pass
+    return policy
+
+
+def _file_service(path: str, payload: dict | None = None) -> dict:
+    """Call the file-scan API; turn every failure into the hook's decision.
+
+    Kept apart from the file I/O on purpose: urllib's network and HTTP errors are
+    OSError subclasses, so one try around both would treat an outage like a missing
+    file — silently allowing it, i.e. failing open.
+    """
+    try:
+        # 50 s, well inside the PreToolUse timeout in hooks.json (90 s): Claude Code
+        # treats a hook it had to kill as non-blocking, so a slow scan must end HERE,
+        # as a fail-closed deny, never by being killed (which would let the file in).
+        return _post(path, payload or {}, timeout=50 if payload else 10)
+    except QuotaExceededError as exc:
+        _block(f"""**[AgentGuards] Request quota reached**
+{exc.user_message}""")
+    except ForbiddenError:
+        _allow()  # file scanning not available to this account
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            _allow()  # an AgentGuards server from before file scanning
+        if _fail_open():
+            _allow()
+        _pre_tool("deny", f"""**[AgentGuards] File not opened**
+AgentGuards could not scan it (HTTP {exc.code}) and the hook is fail-closed.""")
+    except Exception as exc:
+        if _fail_open():
+            print(f"AgentGuards: service unreachable ({exc}), allowing file read (AGENTGUARDS_FAIL_OPEN=true)", file=sys.stderr)
+            _allow()
+        _pre_tool("deny", f"""**[AgentGuards] File not opened**
+AgentGuards is unreachable ({exc}) and the hook is fail-closed.
+{_unreachable_remedy(exc)}""")
+    raise AssertionError("unreachable")  # every branch above exits
+
+
+def handle_file_read(event: dict) -> None:
+    """PreToolUse for Read: scan an image or PDF before the model sees it.
+
+    Never answers "allow": a clean file exits silently so Claude Code's own permission
+    prompt still applies. Only a scan verdict (or a fail-closed outage) denies.
+    """
+    tool_input = event.get("tool_input", {}) or {}
+    path = str(tool_input.get("file_path") or "")
+    media_type = _FILE_TYPES.get(os.path.splitext(path)[1].lower())
+    if not media_type:
+        _allow()
+    if not os.path.isabs(path):
+        path = os.path.join(str(event.get("cwd") or os.getcwd()), path)
+    if not os.path.isfile(path):
+        _allow()  # missing, or not a file: Read reports that itself, nothing reaches the model
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        _allow()
+
+    policy = _cached_file_policy()
+    if not policy.get("scan_files", True):
+        _allow()
+    max_bytes = int(policy.get("max_bytes") or _FILE_MAX_BYTES)
+    payload: dict = {"media_type": media_type, "tool": "Read", "channel": "claude_code"}
+    if size > max_bytes:
+        payload["unreadable"] = f"file over {max_bytes // (1024 * 1024)} MB"
+    else:
+        try:
+            with open(path, "rb") as fh:
+                payload["data"] = base64.b64encode(fh.read()).decode("ascii")
+        except OSError:
+            _allow()  # vanished or unreadable since the size check: Read will say so
+    result = _file_service("/v1/guardrails/evaluate-file", payload)
+    if result.get("decision") == "block":
+        _pre_tool("deny", result.get("message") or "\N{SHIELD}\N{VARIATION SELECTOR-16} [AgentGuards] File blocked")
+    _allow()
+
+
 def handle_pre_tool_use(event: dict) -> None:
     tool_name = event.get("tool_name", "")
     tool_input = event.get("tool_input", {}) or {}
+
+    if tool_name == "Read":
+        handle_file_read(event)
 
     # Pre-fetch URL check (web scan v2): stop the request itself when the URL carries a
     # secret, targets a cloud metadata endpoint, uses a non-web scheme, or breaks the

@@ -12,11 +12,12 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash|WebFetch|mcp__.+__.*(fetch|Fetch|browse|scrape|crawl|navigate|page_text|read_page|extract|web_|url|http).*",
+        "matcher": "Read|Bash|WebFetch|mcp__.+__.*(fetch|Fetch|browse|scrape|crawl|navigate|page_text|read_page|extract|web_|url|http).*",
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/run-hook.sh\" PreToolUse"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/run-hook.sh\" PreToolUse",
+            "timeout": 90
           }
         ]
       }

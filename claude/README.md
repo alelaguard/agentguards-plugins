@@ -11,9 +11,10 @@ switch to fail-open (availability-first) with a single environment variable
 This plugin bundles:
 
 - **enforcing hooks** — `UserPromptSubmit` input scanning, `PreToolUse` Bash
-  authorization and a pre-fetch URL check (WebFetch, `curl`/`wget`, MCP fetch
-  tools), and `PostToolUse` web-content scanning/redaction and security scanning
-  of file writes,
+  authorization, a pre-fetch URL check (WebFetch, `curl`/`wget`, MCP fetch
+  tools) and a scan of images and PDFs before Claude opens them (`Read`), and
+  `PostToolUse` web-content scanning/redaction and security scanning of file
+  writes,
 - the `setup`, `status` and `guardrails` skills.
 
 There is no MCP server: the hooks enforce everything on their own, so there is
@@ -113,6 +114,7 @@ Checking content means sending it to AgentGuards. The hooks send these to
 | Before a web fetch (WebFetch, `curl`/`wget`, MCP fetch tools) | The URL(s) |
 | After a web fetch | The fetched page or tool output |
 | After Claude writes or edits a file | The file's path and new content |
+| Before Claude opens an image or PDF (`Read` of `.png` `.jpg` `.jpeg` `.gif` `.webp` `.pdf`) | The file itself, up to 5 MB (larger files: only its type and that it was too large). Not stored. Nothing is sent if your account has turned file scanning off on the Checks page. |
 
 Nothing is sent anywhere else, and the hooks send nothing when no API key is
 set. The hooks read your key from `AGENTGUARDS_API_KEY`, the plugin's

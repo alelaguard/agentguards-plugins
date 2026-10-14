@@ -625,7 +625,7 @@ function Test-OnlyRedactResolvableFailed($Result) {
 # --- Claude Code-specific -------------------------------------------------------------
 
 # This plugin's version (must equal plugin.json; a test checks), sent as claude-code/ps1/<version>.
-$PluginVersion = '0.2.37'
+$PluginVersion = '0.2.38'
 $script:ClientName = 'claude-code/ps1/' + $PluginVersion
 # (os.getenv(...) or default): an EMPTY value also means the default here.
 $script:AgentGuardsUrl = $env:AGENTGUARDS_URL
@@ -768,9 +768,112 @@ function Get-SessionId($Evt) {
     return [string]$sid
 }
 
+# --- Read: images and PDFs are scanned before the model sees them ----------------------
+# Mirrors handle_file_read / _cached_file_policy / _file_service in agentguards_hook.py.
+$FileTypes = @{ '.png' = 'image/png'; '.jpg' = 'image/jpeg'; '.jpeg' = 'image/jpeg'; '.gif' = 'image/gif'; '.webp' = 'image/webp'; '.pdf' = 'application/pdf' }
+$script:FilePolicyPath = Join-Path (Join-Path (Get-HomeDir) '.claude') 'agentguards_file_policy.json'
+$FilePolicyTtl = 300
+$FileMaxBytes = 5 * 1024 * 1024
+
+# Network failures are handled here, apart from the file I/O (see _file_service).
+function Invoke-FileService([string]$Path, $Payload) {
+    # 50 s, inside the 90 s PreToolUse timeout in hooks.json: a killed hook does not block.
+    $timeout = 50
+    if ($null -eq $Payload) { $Payload = [ordered]@{}; $timeout = 10 }
+    try {
+        return (Invoke-AgentGuards $Path $Payload $timeout)
+    } catch [AgentGuardsQuotaError] {
+        Exit-Block "**[AgentGuards] Request quota reached**`n$($_.Exception.UserMessage)"
+    } catch [AgentGuardsForbiddenError] {
+        Exit-Allow
+    } catch {
+        $inner = Get-Inner $_
+        if ($inner -is [AgentGuardsHttpError]) {
+            if ($inner.StatusCode -eq 404) { Exit-Allow }
+            if (Test-FailOpen) { Exit-Allow }
+            Exit-PreTool 'deny' "**[AgentGuards] File not opened**`nAgentGuards could not scan it (HTTP $($inner.StatusCode)) and the hook is fail-closed."
+        }
+        $err = Get-ErrorText $_
+        if (Test-FailOpen) {
+            Write-Err "AgentGuards: service unreachable ($err), allowing file read (AGENTGUARDS_FAIL_OPEN=true)"
+            Exit-Allow
+        }
+        Exit-PreTool 'deny' "**[AgentGuards] File not opened**`nAgentGuards is unreachable ($err) and the hook is fail-closed.`n$(Get-UnreachableRemedy $_)"
+    }
+}
+
+function Get-FilePolicyOwner {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $hash = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes("$($script:AgentGuardsUrl)|$($script:ApiKey)"))
+    return (([System.BitConverter]::ToString($hash) -replace '-', '').ToLowerInvariant()).Substring(0, 16)
+}
+
+# The tenant's off switch, asked BEFORE any file is uploaded; cached a few minutes.
+function Get-CachedFilePolicy {
+    $owner = Get-FilePolicyOwner
+    try {
+        if (Test-Path -LiteralPath $script:FilePolicyPath) {
+            $c = [System.IO.File]::ReadAllText($script:FilePolicyPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+            $at = Get-Prop $c 'at' 0
+            $v = Get-Prop $c 'v'
+            if ((Test-IsObject $c) -and (Test-IsNumber $v) -and ([double]$v -eq 1) -and ((Get-Prop $c 'owner') -ceq $owner) -and
+                (Test-IsNumber $at) -and (((Get-NowSeconds) - [double]$at) -lt $FilePolicyTtl) -and (Test-IsObject (Get-Prop $c 'policy'))) {
+                return (Get-Prop $c 'policy')
+            }
+        }
+    } catch { }
+    $policy = Invoke-FileService '/v1/guardrails/file-scan-policy' $null
+    try {
+        $dir = Split-Path -Parent $script:FilePolicyPath
+        if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+        $json = [ordered]@{ v = 1; owner = $owner; at = (Get-NowSeconds); policy = $policy } | ConvertTo-Json -Depth 20 -Compress
+        [System.IO.File]::WriteAllText($script:FilePolicyPath, $json, [System.Text.UTF8Encoding]::new($false))
+    } catch { }
+    return $policy
+}
+
+# Never answers "allow": a clean file exits silently so Claude Code's own permission
+# prompt still applies. Only a scan verdict (or a fail-closed outage) denies.
+function Invoke-FileRead($Evt) {
+    $toolInput = Get-ToolInput $Evt
+    $raw = Get-Prop $toolInput 'file_path' ''
+    $path = ''
+    if (Test-PyTruthy $raw) { $path = [string]$raw }
+    $ext = [System.IO.Path]::GetExtension($path).ToLowerInvariant()
+    if (-not $FileTypes.ContainsKey($ext)) { Exit-Allow }
+    $mediaType = $FileTypes[$ext]
+    if (-not [System.IO.Path]::IsPathRooted($path)) {
+        $cwd = ''
+        $c = Get-Prop $Evt 'cwd'
+        if (Test-PyTruthy $c) { $cwd = [string]$c } else { $cwd = (Get-Location).Path }
+        $path = Join-Path $cwd $path
+    }
+    # Missing, or not a file: Read reports that itself, nothing reaches the model.
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { Exit-Allow }
+    try { $size = (Get-Item -LiteralPath $path -ErrorAction Stop).Length } catch { Exit-Allow }
+
+    $policy = Get-CachedFilePolicy
+    if (-not (Test-PyTruthy (Get-Prop $policy 'scan_files' $true))) { Exit-Allow }
+    $max = Get-Prop $policy 'max_bytes'
+    if (-not (Test-PyTruthy $max)) { $max = $FileMaxBytes }
+    $max = [int64]$max
+    $payload = [ordered]@{ media_type = $mediaType; tool = 'Read'; channel = 'claude_code' }
+    if ($size -gt $max) {
+        $payload['unreadable'] = "file over $([int64][math]::Floor($max / 1048576)) MB"
+    } else {
+        try { $payload['data'] = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($path)) } catch { Exit-Allow }
+    }
+    $result = Invoke-FileService '/v1/guardrails/evaluate-file' $payload
+    if ((Get-Decision $result) -ceq 'block') {
+        Exit-PreTool 'deny' (Get-Message $result 'message' "$Shield [AgentGuards] File blocked")
+    }
+    Exit-Allow
+}
+
 function Invoke-PreToolUse($Evt) {
     $tool = [string](Get-Prop $Evt 'tool_name' '')
     $toolInput = Get-ToolInput $Evt
+    if ($tool -ceq 'Read') { Invoke-FileRead $Evt }
     # Pre-fetch URL check (web scan v2); the server allows everything while web_scan is off.
     if ($tool -ceq 'WebFetch' -or (Test-McpFetchTool $tool)) {
         $message = Get-UrlBlockMessage (Get-ToolUrls $tool $toolInput) $tool
