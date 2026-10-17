@@ -1,0 +1,37 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/run-hook.sh\" UserPromptSubmit"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Read|Bash|WebFetch|mcp__.+__.*(fetch|Fetch|browse|scrape|crawl|navigate|page_text|read_page|extract|web_|url|http).*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/run-hook.sh\" PreToolUse",
+            "timeout": 90
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|WebFetch|WebSearch|Write|Edit|MultiEdit|mcp__.+__.*(fetch|Fetch|browse|scrape|crawl|navigate|page_text|read_page|extract|web_|url|http).*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/run-hook.sh\" PostToolUse"
+          }
+        ]
+      }
+    ]
+  }
+}
