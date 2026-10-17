@@ -37,10 +37,6 @@ This plugin bundles:
 There is no MCP server: the hooks enforce everything on their own, so there is
 nothing for Claude to call. (Before 0.2.34 the plugin also bundled one.)
 
-**Easiest install:** the AgentGuards installer signs you in through the browser,
-installs this plugin and saves your key, with nothing to paste. See
-https://agentguards.co for the one-line command. The manual steps are below.
-
 ## Install
 
 ```
@@ -48,8 +44,8 @@ https://agentguards.co for the one-line command. The manual steps are below.
 /plugin install agentguards@agentguards
 ```
 
-Then provide your API key (get one at
-https://agentguards.co/dashboard/keys) so the hooks can authenticate:
+Then provide your API key ([create a free account](https://agentguards.co/sign-up?utm_source=github&utm_medium=readme&utm_campaign=plugins_repo&utm_content=claude_key) and
+copy one from the dashboard) so the hooks can authenticate:
 
 ```
 export AGENTGUARDS_API_KEY=ag_your_token_here

@@ -5,7 +5,7 @@ the one that applies to that folder.
 
 | Folder | Licence |
 |---|---|
-| `claude/`, `codex/`, `gemini/`, `copilot/`, `opencode/` (hosted plugins) | [Functional Source License 1.1, MIT Future License](https://fsl.software) (`FSL-1.1-MIT`), see each folder's `LICENSE` |
+| `claude/`, `claude-directory/`, `codex/`, `gemini/`, `copilot/`, `opencode/` (hosted plugins) | [Functional Source License 1.1, MIT Future License](https://fsl.software) (`FSL-1.1-MIT`), see each folder's `LICENSE` |
 | `claude-selfhosted/`, `codex-selfhosted/`, `gemini-selfhosted/`, `copilot-selfhosted/` (self-hosted appliance plugins) | MIT, see each folder's `LICENSE` or the root [`LICENSE`](./LICENSE) |
 | Everything else (`cli/`, `tests/`, CI) | MIT, see the root [`LICENSE`](./LICENSE) |
 

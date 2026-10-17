@@ -63,8 +63,8 @@ codex plugin marketplace add alelaguard/agentguards-plugins
 codex plugin add agentguards-codex@agentguards-codex
 ```
 
-Then provide your API key (get one at
-https://agentguards.co/dashboard/keys) so the hooks can authenticate:
+Then provide your API key ([create a free account](https://agentguards.co/sign-up?utm_source=github&utm_medium=readme&utm_campaign=plugins_repo&utm_content=codex_key) and
+copy one from the dashboard) so the hooks can authenticate:
 
 ```
 export AGENTGUARDS_API_KEY=ag_your_token_here
@@ -74,8 +74,9 @@ Add that line to your shell profile (`~/.bashrc`, `~/.zshrc`, …) and restart
 Codex so it inherits the key on every session.
 
 > **Easiest install:** the AgentGuards installer signs you in through the
-> browser, installs this plugin and saves your key, with nothing to paste. See
-> https://agentguards.co for the one-line command.
+> browser, installs this plugin and saves your key, with nothing to paste:
+> `curl -fsSL https://agentguards.co/install.sh | sh` (Windows PowerShell:
+> `irm https://agentguards.co/install.ps1 | iex`).
 
 ## Configuration
 
