@@ -12,6 +12,22 @@ every prompt, shell command and piece of fetched content before the agent acts o
 
 ## What gets blocked
 
+![Claude Code fetches a blog post carrying instructions for the agent; AgentGuards blocks the page content and Claude refuses to act on it](./assets/demo-web-injection.gif)
+
+*A real, unedited run: Claude Code with the AgentGuards plugin is asked to apply the "performance
+tips" from a blog post (a test page served locally) that carries instructions aimed at the agent.
+AgentGuards blocks the page content, and Claude leaves `src/app.py` untouched.*
+
+<details>
+<summary>Another example: instructions hidden in a PDF</summary>
+
+![Claude Code is asked to summarize a PDF with hidden instructions; AgentGuards blocks the file before Claude reads it](./assets/demo-pdf-injection.gif)
+
+*Claude Code is asked to summarize a PDF whose white text layer carries instructions for the agent.
+The file is blocked before Claude reads it.*
+
+</details>
+
 | The agent is about to… | AgentGuards |
 |---|---|
 | Read a web page with hidden "ignore your instructions and…" text | Withholds the page, or strips the injected text, before the agent acts on it |
