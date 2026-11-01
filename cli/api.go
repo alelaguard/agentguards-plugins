@@ -56,6 +56,37 @@ func postJSON(path string, body any, apiKey string, out any) (int, error) {
 	return resp.StatusCode, nil
 }
 
+// keyClient never follows a redirect, so the key goes only to apiBase().
+var keyClient = &http.Client{
+	Timeout:       10 * time.Second,
+	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+}
+
+// keyStatus checks a key with a read-only request that records no usage (the
+// account's checks settings), so a tool can run it on every refresh without
+// spending quota. "works", "rejected" (revoked or unknown) or "unknown".
+func keyStatus(apiKey string) string {
+	req, err := http.NewRequest(http.MethodGet, apiBase()+"/dashboard/checks", nil)
+	if err != nil {
+		return "unknown"
+	}
+	req.Header.Set("X-AgentGuards-Client", "installer/"+version)
+	req.Header.Set("X-API-Key", apiKey)
+	resp, err := keyClient.Do(req)
+	if err != nil {
+		return "unknown"
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+	switch {
+	case resp.StatusCode == 401 || resp.StatusCode == 403:
+		return "rejected"
+	case resp.StatusCode == 200:
+		return "works"
+	}
+	return "unknown"
+}
+
 // errKeyRejected means the API refused the key itself (revoked or unknown) —
 // the only checkKey failure that justifies getting a new key. Network errors,
 // timeouts, 5xx and quota (429) say nothing about the key and must never trigger

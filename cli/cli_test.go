@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -651,5 +652,339 @@ func TestMalformedAgentConfigIsIgnored(t *testing.T) {
 	writeFile(t, filepath.Join(home, ".claude", "settings.json"), `{"env":{"AGENTGUARDS_API_KEY":"not-a-key"}}`)
 	if got := existingAgentKeys(); len(got) != 0 {
 		t.Fatalf("expected no keys, got %d", len(got))
+	}
+}
+
+func TestDoctorJSONReportsEachAgentAndNeverTheKey(t *testing.T) {
+	withHome(t)
+	saveCredentials(Credentials{APIKey: goodKey})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"decision":"allow"}`)
+	}))
+	defer srv.Close()
+	t.Setenv("AGENTGUARDS_URL", srv.URL)
+	oldLook := lookPath
+	lookPath = func(name string) (string, error) {
+		if name == "claude" {
+			return "/usr/bin/claude", nil
+		}
+		return "", os.ErrNotExist
+	}
+	defer func() { lookPath = oldLook }()
+	oldPy := pythonWorks
+	pythonWorks = func(string) bool { return true }
+	defer func() { pythonWorks = oldPy }()
+	f := &fakeRunner{replies: map[string]string{
+		"claude plugin list --json": `[{"id":"agentguards-claude@agentguards","enabled":false}]`,
+	}}
+	f.install(t)
+
+	var out bytes.Buffer
+	err := cmdDoctor([]string{"--json"}, &out)
+	if err == nil {
+		t.Fatal("a disabled plugin is a problem: the exit status must say so")
+	}
+	if strings.Contains(out.String(), goodKey) {
+		t.Fatal("the JSON report must never contain the key")
+	}
+	var r doctorReport
+	if err := json.Unmarshal(out.Bytes(), &r); err != nil {
+		t.Fatalf("stdout must be only JSON: %v\n%s", err, out.String())
+	}
+	if !r.KeyFound || !r.KeyWorks || !r.HookRuntime || r.Problems != 1 {
+		t.Fatalf("unexpected report: %+v", r)
+	}
+	states := map[string]string{}
+	for _, a := range r.Agents {
+		states[a.ID] = a.State
+	}
+	if states["claude-code"] != "disabled" || states["codex"] != "not_found" {
+		t.Fatalf("agent states: %v", states)
+	}
+}
+
+func TestDoctorTextOutputIsUnchangedInShape(t *testing.T) {
+	withHome(t)
+	oldLook := lookPath
+	lookPath = func(string) (string, error) { return "", os.ErrNotExist }
+	defer func() { lookPath = oldLook }()
+	var out bytes.Buffer
+	cmdDoctor(nil, &out)
+	s := out.String()
+	if !strings.HasPrefix(s, "AgentGuards doctor (") || !strings.Contains(s, "✗ no API key") ||
+		!strings.Contains(s, "✗ no supported coding agent found") {
+		t.Fatalf("text output:\n%s", s)
+	}
+}
+
+func TestDoctorOfflineSendsNoRequest(t *testing.T) {
+	withHome(t)
+	saveCredentials(Credentials{APIKey: goodKey})
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		io.WriteString(w, `{"decision":"allow"}`)
+	}))
+	defer srv.Close()
+	t.Setenv("AGENTGUARDS_URL", srv.URL)
+	oldLook := lookPath
+	lookPath = func(string) (string, error) { return "", os.ErrNotExist }
+	defer func() { lookPath = oldLook }()
+	var out bytes.Buffer
+	cmdDoctor([]string{"--json", "--offline"}, &out)
+	var r doctorReport
+	if err := json.Unmarshal(out.Bytes(), &r); err != nil {
+		t.Fatal(err)
+	}
+	if hits != 0 {
+		t.Fatalf("--offline must not call the API (each call uses quota); %d calls", hits)
+	}
+	if !r.KeyFound || r.KeyChecked || r.KeyWorks {
+		t.Fatalf("offline: key found but not checked: %+v", r)
+	}
+}
+
+func TestDoctorOfflineStillReportsTheCodexKeyOverride(t *testing.T) {
+	home := withHome(t)
+	saveCredentials(Credentials{APIKey: goodKey})
+	os.MkdirAll(filepath.Join(home, ".codex"), 0o755)
+	other := "ag_" + strings.Repeat("e", 32)
+	os.WriteFile(filepath.Join(home, ".codex", "agentguards_token"), []byte(other), 0o600)
+	oldLook := lookPath
+	lookPath = func(string) (string, error) { return "", os.ErrNotExist }
+	defer func() { lookPath = oldLook }()
+	var out bytes.Buffer
+	cmdDoctor([]string{"--json", "--offline"}, &out)
+	var r doctorReport
+	if err := json.Unmarshal(out.Bytes(), &r); err != nil {
+		t.Fatal(err)
+	}
+	if !r.CodexKeyOverride || strings.Contains(out.String(), other) {
+		t.Fatalf("offline must still say Codex uses its own key (without printing it): %s", out.String())
+	}
+}
+
+func TestDoctorOfflineTextSaysTheKeyWasNotTested(t *testing.T) {
+	withHome(t)
+	saveCredentials(Credentials{APIKey: goodKey})
+	oldLook := lookPath
+	lookPath = func(name string) (string, error) { return "/usr/bin/" + name, nil }
+	defer func() { lookPath = oldLook }()
+	oldPy := pythonWorks
+	pythonWorks = func(string) bool { return true }
+	defer func() { pythonWorks = oldPy }()
+	f := &fakeRunner{replies: map[string]string{
+		"claude plugin list --json": `[{"id":"agentguards-claude@agentguards","enabled":true}]`,
+		"codex plugin list":         "agentguards-codex@agentguards-codex  installed, enabled  9.9.9\n",
+	}}
+	f.install(t)
+	var out bytes.Buffer
+	if err := cmdDoctor([]string{"--offline"}, &out); err != nil {
+		t.Fatalf("%v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "not tested") || strings.Contains(out.String(), "\nAll good.\n") {
+		t.Fatalf("offline text must not claim the key works:\n%s", out.String())
+	}
+}
+
+func TestDoctorJSONMarksAnOutdatedCodexPlugin(t *testing.T) {
+	withHome(t)
+	saveCredentials(Credentials{APIKey: goodKey})
+	oldLook := lookPath
+	lookPath = func(name string) (string, error) {
+		if name == "codex" {
+			return "/usr/bin/codex", nil
+		}
+		return "", os.ErrNotExist
+	}
+	defer func() { lookPath = oldLook }()
+	f := &fakeRunner{replies: map[string]string{
+		"codex plugin list": "agentguards-codex@agentguards-codex  installed, enabled  0.2.15\n",
+	}}
+	f.install(t)
+	var out bytes.Buffer
+	cmdDoctor([]string{"--json", "--offline"}, &out)
+	var r doctorReport
+	if err := json.Unmarshal(out.Bytes(), &r); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range r.Agents {
+		if a.ID == "codex" && a.State == "enabled" && a.Outdated {
+			return
+		}
+	}
+	t.Fatalf("an enabled but outdated Codex plugin must say so in its own field: %+v", r.Agents)
+}
+
+func doctorJSON(t *testing.T, extra ...string) doctorReport {
+	t.Helper()
+	oldLook := lookPath
+	lookPath = func(name string) (string, error) { return "/usr/bin/" + name, nil }
+	t.Cleanup(func() { lookPath = oldLook })
+	f := &fakeRunner{replies: map[string]string{
+		"claude plugin list --json": `[{"id":"agentguards-claude@agentguards","enabled":true}]`,
+		"codex plugin list":         "agentguards-codex@agentguards-codex  installed, enabled  9.9.9\n",
+	}}
+	f.install(t)
+	var out bytes.Buffer
+	cmdDoctor(append([]string{"--json", "--offline"}, extra...), &out)
+	if s := out.String(); strings.Contains(s, goodKey) || strings.Contains(s, strings.Repeat("d", 32)) {
+		t.Fatal("the JSON report must never contain a key")
+	}
+	var r doctorReport
+	if err := json.Unmarshal(out.Bytes(), &r); err != nil {
+		t.Fatalf("%v\n%s", err, out.String())
+	}
+	return r
+}
+
+func TestDoctorChecksEachAgentsOwnKeyWithoutQuota(t *testing.T) {
+	home := withHome(t)
+	// Claude sends a working key from its settings; Codex a revoked one from its
+	// token file; the saved key isn't used by either.
+	revoked := "ag_" + strings.Repeat("d", 32)
+	os.MkdirAll(filepath.Join(home, ".claude"), 0o755)
+	os.WriteFile(filepath.Join(home, ".claude", "settings.json"),
+		[]byte(`{"env":{"AGENTGUARDS_API_KEY":"`+goodKey+`"}}`), 0o600)
+	os.MkdirAll(filepath.Join(home, ".codex"), 0o755)
+	os.WriteFile(filepath.Join(home, ".codex", "agentguards_token"), []byte(revoked+"\n"), 0o600)
+	saveCredentials(Credentials{APIKey: goodKey})
+	var calls []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method+" "+r.URL.Path)
+		if r.Method != http.MethodGet || r.URL.Path != "/dashboard/checks" {
+			w.WriteHeader(500)
+			return
+		}
+		if r.Header.Get("X-API-Key") != goodKey {
+			w.WriteHeader(401)
+			return
+		}
+		io.WriteString(w, `{}`)
+	}))
+	defer srv.Close()
+	t.Setenv("AGENTGUARDS_URL", srv.URL)
+
+	r := doctorJSON(t, "--check-agent-keys")
+	if c := agentByID(r, "claude-code"); c.KeySource != "claude_settings" || c.KeyStatus != "works" {
+		t.Fatalf("claude: %+v", c)
+	}
+	if c := agentByID(r, "codex"); c.KeySource != "codex_token" || c.KeyStatus != "rejected" {
+		t.Fatalf("codex: %+v", c)
+	}
+	if r.Problems == 0 {
+		t.Fatal("an agent sending a rejected key is a problem")
+	}
+	// Only the read-only endpoint, once per distinct key: no screening request.
+	if len(calls) != 2 || calls[0] != "GET /dashboard/checks" || calls[1] != "GET /dashboard/checks" {
+		t.Fatalf("calls: %v", calls)
+	}
+}
+
+func TestDoctorNeverSendsAKeyMeantForAnotherServer(t *testing.T) {
+	home := withHome(t)
+	other := "ag_" + strings.Repeat("d", 32)
+	os.MkdirAll(filepath.Join(home, ".claude"), 0o755)
+	os.WriteFile(filepath.Join(home, ".claude", "settings.json"),
+		[]byte(`{"env":{"AGENTGUARDS_API_KEY":"`+other+`","AGENTGUARDS_URL":"https://ag.example.internal/"}}`), 0o600)
+	saveCredentials(Credentials{APIKey: goodKey})
+	var sent []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sent = append(sent, r.Header.Get("X-API-Key"))
+		io.WriteString(w, `{}`)
+	}))
+	defer srv.Close()
+	t.Setenv("AGENTGUARDS_URL", srv.URL)
+	r := doctorJSON(t, "--check-agent-keys")
+	if c := agentByID(r, "claude-code"); c.KeyStatus != "other_server" {
+		t.Fatalf("claude: %+v", c)
+	}
+	if c := agentByID(r, "codex"); c.KeyStatus != "works" {
+		t.Fatalf("codex: %+v", c)
+	}
+	for _, k := range sent {
+		if k == other {
+			t.Fatal("a key for another server was sent to this one")
+		}
+	}
+}
+
+func TestDoctorAgentKeyCheckOnUnreachableAPIIsUnknownNotAProblem(t *testing.T) {
+	withHome(t)
+	saveCredentials(Credentials{APIKey: goodKey})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(503)
+	}))
+	defer srv.Close()
+	t.Setenv("AGENTGUARDS_URL", srv.URL)
+	r := doctorJSON(t, "--check-agent-keys")
+	if c := agentByID(r, "codex"); c.KeySource != "saved" || c.KeyStatus != "unknown" {
+		t.Fatalf("codex: %+v", c)
+	}
+	if r.Problems != 0 {
+		t.Fatalf("an outage says nothing about the key: %+v", r.Checks)
+	}
+}
+
+func TestDoctorWithoutTheFlagDoesNotCheckAgentKeys(t *testing.T) {
+	withHome(t)
+	saveCredentials(Credentials{APIKey: goodKey})
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits++ }))
+	defer srv.Close()
+	t.Setenv("AGENTGUARDS_URL", srv.URL)
+	r := doctorJSON(t)
+	if hits != 0 || agentByID(r, "codex").KeyStatus != "" {
+		t.Fatalf("hits %d, %+v", hits, agentByID(r, "codex"))
+	}
+}
+
+func agentByID(r doctorReport, id string) doctorAgent {
+	for _, a := range r.Agents {
+		if a.ID == id {
+			return a
+		}
+	}
+	return doctorAgent{}
+}
+
+func TestDoctorReportsWhereEachAgentGetsItsKey(t *testing.T) {
+	home := withHome(t)
+	// Claude: a key in the plugin's own setting; Codex: falls back to the saved key.
+	os.MkdirAll(filepath.Join(home, ".claude"), 0o755)
+	os.WriteFile(filepath.Join(home, ".claude", ".credentials.json"),
+		[]byte(`{"pluginSecrets":{"agentguards-claude@agentguards":{"agentguards_api_key":"`+goodKey+`"}}}`), 0o600)
+	saveCredentials(Credentials{APIKey: "ag_" + strings.Repeat("b", 32)})
+	r := doctorJSON(t)
+	if c := agentByID(r, "claude-code"); c.KeySource != "claude_plugin" || !c.KeyFound {
+		t.Fatalf("claude: %+v", c)
+	}
+	if c := agentByID(r, "codex"); c.KeySource != "saved" || !c.KeyFound {
+		t.Fatalf("codex: %+v", c)
+	}
+}
+
+func TestDoctorFlagsACodexTokenFileWithoutAKey(t *testing.T) {
+	home := withHome(t)
+	saveCredentials(Credentials{APIKey: goodKey})
+	os.MkdirAll(filepath.Join(home, ".codex"), 0o755)
+	os.WriteFile(filepath.Join(home, ".codex", "agentguards_token"), []byte("paste-your-key-here\n"), 0o600)
+	r := doctorJSON(t)
+	c := agentByID(r, "codex")
+	if c.KeySource != "codex_token" || c.KeyFound || r.CodexKeyOverride || r.Problems == 0 {
+		t.Fatalf("junk in the Codex token file must not count as a key: %+v / %+v", c, r)
+	}
+	if strings.Contains(fmt.Sprint(r), "paste-your-key-here") {
+		t.Fatal("the file's content must not be echoed")
+	}
+}
+
+func TestDoctorWithNoKeyAnywhere(t *testing.T) {
+	withHome(t)
+	r := doctorJSON(t)
+	for _, id := range []string{"claude-code", "codex"} {
+		if a := agentByID(r, id); a.KeyFound || a.KeySource != "" {
+			t.Fatalf("%s: %+v", id, a)
+		}
 	}
 }

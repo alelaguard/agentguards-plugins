@@ -35,23 +35,53 @@ func existingAgentKeys() []existingKey {
 			found = append(found, existingKey{k, where})
 		}
 	}
-	if dir := claudeConfigDir(); dir != "" {
-		var settings struct {
-			Env map[string]string `json:"env"`
-		}
-		if readJSON(filepath.Join(dir, "settings.json"), &settings) {
-			add(settings.Env["AGENTGUARDS_API_KEY"], "Claude Code's settings.json")
-		}
-		var creds struct {
-			PluginSecrets map[string]map[string]string `json:"pluginSecrets"`
-		}
-		if readJSON(filepath.Join(dir, ".credentials.json"), &creds) {
-			add(creds.PluginSecrets["agentguards-claude@agentguards"]["agentguards_api_key"],
-				"the Claude Code plugin's settings")
-		}
-	}
+	settingsKey, pluginKey := claudeKeys()
+	add(settingsKey, "Claude Code's settings.json")
+	add(pluginKey, "the Claude Code plugin's settings")
 	add(codexTokenFileKey(), "~/.codex/agentguards_token")
 	return found
+}
+
+// claudeKeys returns the valid keys in Claude Code's settings.json env block and in
+// the Claude plugin's saved setting ("" where there is none).
+func claudeKeys() (settingsKey, pluginKey string) {
+	dir := claudeConfigDir()
+	if dir == "" {
+		return "", ""
+	}
+	var settings struct {
+		Env map[string]string `json:"env"`
+	}
+	if readJSON(filepath.Join(dir, "settings.json"), &settings) {
+		if k := strings.TrimSpace(settings.Env["AGENTGUARDS_API_KEY"]); validKey(k) {
+			settingsKey = k
+		}
+	}
+	var creds struct {
+		PluginSecrets map[string]map[string]string `json:"pluginSecrets"`
+	}
+	if readJSON(filepath.Join(dir, ".credentials.json"), &creds) {
+		if k := strings.TrimSpace(creds.PluginSecrets["agentguards-claude@agentguards"]["agentguards_api_key"]); validKey(k) {
+			pluginKey = k
+		}
+	}
+	return settingsKey, pluginKey
+}
+
+// claudeSettingsURL is AGENTGUARDS_URL from Claude Code's settings.json env block
+// ("" if unset): the server Claude Code's hook sends its key to, when set there.
+func claudeSettingsURL() string {
+	dir := claudeConfigDir()
+	if dir == "" {
+		return ""
+	}
+	var settings struct {
+		Env map[string]string `json:"env"`
+	}
+	if !readJSON(filepath.Join(dir, "settings.json"), &settings) {
+		return ""
+	}
+	return strings.TrimRight(strings.TrimSpace(settings.Env["AGENTGUARDS_URL"]), "/")
 }
 
 // claudeConfigDir is where Claude Code keeps its settings: CLAUDE_CONFIG_DIR, or ~/.claude.
