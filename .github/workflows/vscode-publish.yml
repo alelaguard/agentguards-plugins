@@ -1,0 +1,134 @@
+name: Publish the VS Code extension
+
+# Push a tag like `vscode-v0.1.0` (the "Publish to the public repo" workflow does, with
+# its vscode_tag input) to publish vscode/ to the VS Code Marketplace and Open VSX.
+# The tag must match vscode/package.json's version. The unit tests run in the private
+# repo before a release; this builds from the published source and publishes it.
+#
+# The two store tokens are repository secrets of this repo (Settings > Secrets and
+# variables > Actions). Only this workflow references them; fork PRs never get secrets.
+#   VSCE_PAT  Azure DevOps token, scope Marketplace > Manage, for publisher agentguards
+#             (expires ~2027-10-30; renew it and update the secret before then)
+#   OVSX_PAT  Open VSX access token for the agentguards namespace
+#
+# Keeping the tokens safe from the build's own dependencies:
+# - The build runs in its own job, with no secrets and a read-only token, so code
+#   that runs while building (esbuild, tsc, vsce's packaging) can't reach them or
+#   leave anything behind for the publish job.
+# - npm installs with --ignore-scripts: no package's install script ever runs.
+# - checkout never stores the GitHub token in .git/config.
+# - Each store token is given only to the one step that uses it.
+# Re-running after a partial failure is safe: a version already in a store is skipped.
+
+on:
+  push:
+    tags: ["vscode-v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vscode-publish
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      sha256: ${{ steps.pack.outputs.sha256 }}
+    defaults:
+      run:
+        working-directory: vscode
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a # v4.2.0
+        with:
+          node-version: "22"
+
+      - name: The tag matches package.json
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version=$(node -p 'require("./package.json").version')
+          [ "$TAG" = "vscode-v$version" ] || { echo "::error::tag $TAG doesn't match package.json version $version"; exit 1; }
+
+      - name: Build and package
+        id: pack
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund --ignore-scripts
+          npm run typecheck
+          node esbuild.mjs --production
+          npx vsce package --no-dependencies --out agentguards.vsix
+          sha=$(sha256sum agentguards.vsix | cut -d' ' -f1)
+          echo "$sha  agentguards.vsix" > agentguards.vsix.sha256
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: vsix
+          retention-days: 7
+          path: |
+            vscode/agentguards.vsix
+            vscode/agentguards.vsix.sha256
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # attach the published .vsix to a GitHub release
+    defaults:
+      run:
+        working-directory: vscode
+    steps:
+      # Only for package.json + the lock file: vsce and ovsx at their pinned versions.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a # v4.2.0
+        with:
+          node-version: "22"
+      - run: npm ci --no-audit --no-fund --ignore-scripts
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: vsix
+          path: vscode
+
+      - name: The package is the one the build made
+        env:
+          SHA256: ${{ needs.build.outputs.sha256 }}
+        run: echo "$SHA256  agentguards.vsix" | sha256sum -c -
+
+      - name: Publish to the VS Code Marketplace
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: npx vsce publish --packagePath agentguards.vsix --skip-duplicate
+
+      - name: Publish to Open VSX
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: npx ovsx publish agentguards.vsix --skip-duplicate
+
+      # The exact file both stores received, with its checksum, next to the source.
+      # --latest=false: install.sh, install.ps1 and the extension download the installer
+      # from releases/latest, so that must stay the newest cli-v* release.
+      - name: Attach to a GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # A re-run never replaces the file already attached: that is what the stores got.
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; left as it is." >> "$GITHUB_STEP_SUMMARY"
+          else
+            gh release create "$TAG" agentguards.vsix agentguards.vsix.sha256 -R "$GITHUB_REPOSITORY" \
+              --verify-tag --latest=false \
+              --title "AgentGuards for VS Code ${TAG#vscode-v}" \
+              --notes "Published to the VS Code Marketplace and Open VSX. See vscode/CHANGELOG.md."
+          fi

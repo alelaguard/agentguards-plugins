@@ -1,0 +1,288 @@
+{
+  "name": "agentguards",
+  "displayName": "AgentGuards — Extension Scanner",
+  "description": "Checks the extensions you install for malware and vulnerable bundled code, on the AgentGuards service. Warns you and offers one-click uninstall.",
+  "version": "0.1.0",
+  "publisher": "agentguards",
+  "license": "FSL-1.1-MIT",
+  "icon": "media/icon.png",
+  "homepage": "https://agentguards.co",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alelaguard/agentguards-plugins.git",
+    "directory": "vscode"
+  },
+  "bugs": {
+    "url": "https://github.com/alelaguard/agentguards-plugins/issues"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "security",
+    "malware",
+    "extensions",
+    "supply chain",
+    "vulnerabilities",
+    "agentguards"
+  ],
+  "extensionKind": [
+    "ui"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    },
+    "virtualWorkspaces": true
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "agentguards.signIn",
+        "title": "Sign In",
+        "category": "AgentGuards",
+        "icon": "$(account)"
+      },
+      {
+        "command": "agentguards.signOut",
+        "title": "Sign Out",
+        "category": "AgentGuards"
+      },
+      {
+        "command": "agentguards.scanNow",
+        "title": "Check Installed Extensions Now",
+        "category": "AgentGuards",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "agentguards.uninstall",
+        "title": "Uninstall Extension",
+        "category": "AgentGuards",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "agentguards.ignore",
+        "title": "Ignore This Warning",
+        "category": "AgentGuards",
+        "icon": "$(eye-closed)"
+      },
+      {
+        "command": "agentguards.unignore",
+        "title": "Warn Me Again",
+        "category": "AgentGuards",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "agentguards.openDashboard",
+        "title": "Open Dashboard",
+        "category": "AgentGuards",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "agentguards.showLog",
+        "title": "Show Log",
+        "category": "AgentGuards"
+      },
+      {
+        "command": "agentguards.connectAllAgents",
+        "title": "Connect Coding Agents",
+        "category": "AgentGuards",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "agentguards.connectAgent",
+        "title": "Connect to AgentGuards",
+        "category": "AgentGuards",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "agentguards.refreshAgents",
+        "title": "Refresh Coding Agents",
+        "category": "AgentGuards",
+        "icon": "$(refresh)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "agentguards.signIn",
+          "when": "view == agentguards.extensions && !agentguards.signedIn",
+          "group": "navigation@0"
+        },
+        {
+          "command": "agentguards.scanNow",
+          "when": "view == agentguards.extensions && agentguards.signedIn",
+          "group": "navigation@1"
+        },
+        {
+          "command": "agentguards.openDashboard",
+          "when": "view == agentguards.extensions",
+          "group": "navigation@2"
+        },
+        {
+          "command": "agentguards.signOut",
+          "when": "view == agentguards.extensions && agentguards.signedIn",
+          "group": "z_account"
+        },
+        {
+          "command": "agentguards.showLog",
+          "when": "view == agentguards.extensions",
+          "group": "z_account"
+        },
+        {
+          "command": "agentguards.connectAllAgents",
+          "when": "view == agentguards.agents",
+          "group": "navigation@1"
+        },
+        {
+          "command": "agentguards.refreshAgents",
+          "when": "view == agentguards.agents",
+          "group": "navigation@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "agentguards.uninstall",
+          "when": "view == agentguards.extensions && viewItem =~ /flagged/",
+          "group": "inline@1"
+        },
+        {
+          "command": "agentguards.ignore",
+          "when": "view == agentguards.extensions && viewItem =~ /flagged/ && !(viewItem =~ /ignored/)",
+          "group": "inline@2"
+        },
+        {
+          "command": "agentguards.unignore",
+          "when": "view == agentguards.extensions && viewItem =~ /ignored/",
+          "group": "inline@2"
+        },
+        {
+          "command": "agentguards.connectAgent",
+          "when": "view == agentguards.agents && viewItem =~ /connectable/",
+          "group": "inline@1"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "agentguards.uninstall",
+          "when": "false"
+        },
+        {
+          "command": "agentguards.ignore",
+          "when": "false"
+        },
+        {
+          "command": "agentguards.unignore",
+          "when": "false"
+        },
+        {
+          "command": "agentguards.signOut",
+          "when": "agentguards.signedIn"
+        },
+        {
+          "command": "agentguards.scanNow",
+          "when": "agentguards.signedIn"
+        },
+        {
+          "command": "agentguards.connectAgent",
+          "when": "false"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "agentguards",
+          "title": "AgentGuards",
+          "icon": "media/shield.svg"
+        }
+      ]
+    },
+    "views": {
+      "agentguards": [
+        {
+          "id": "agentguards.extensions",
+          "name": "Extensions",
+          "icon": "media/shield.svg"
+        },
+        {
+          "id": "agentguards.agents",
+          "name": "Coding Agents",
+          "icon": "media/shield.svg"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "agentguards.extensions",
+        "contents": "AgentGuards checks every extension you install for malware and vulnerable bundled code, and warns you before it can do harm.\n[Sign In](command:agentguards.signIn)\nYou need an AgentGuards account. [Create one free](https://agentguards.co/sign-up).",
+        "when": "!agentguards.signedIn"
+      },
+      {
+        "view": "agentguards.extensions",
+        "contents": "No extensions installed besides the built-in ones.\n[Check Now](command:agentguards.scanNow)",
+        "when": "agentguards.signedIn"
+      },
+      {
+        "view": "agentguards.agents",
+        "contents": "Protect Claude Code and Codex: AgentGuards screens their prompts, shell commands and fetched web content.\n[Connect Coding Agents](command:agentguards.connectAllAgents)\n[Check Status](command:agentguards.refreshAgents)"
+      }
+    ],
+    "configuration": {
+      "title": "AgentGuards",
+      "properties": {
+        "agentguards.store": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "vscode-marketplace",
+            "open-vsx"
+          ],
+          "enumDescriptions": [
+            "VS Code Marketplace in Visual Studio Code, Open VSX in other editors (Cursor, Windsurf, VSCodium)",
+            "Always the VS Code Marketplace",
+            "Always Open VSX"
+          ],
+          "default": "auto",
+          "scope": "application",
+          "description": "The store your extensions are installed from. AgentGuards downloads each extension from this store to check it."
+        },
+        "agentguards.notifyMedium": {
+          "type": "boolean",
+          "default": true,
+          "scope": "application",
+          "description": "Also notify about medium-risk findings, such as a bundled dependency with a known vulnerability. High-risk and malicious extensions always warn."
+        },
+        "agentguards.apiUrl": {
+          "type": "string",
+          "default": "https://prod.agentguards.co",
+          "scope": "application",
+          "description": "AgentGuards API address. Change only if AgentGuards support asks you to."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "node esbuild.mjs --tests && node --test out-test/",
+    "package": "npm run typecheck && npm test && node esbuild.mjs --production && vsce package --no-dependencies",
+    "vscode:prepublish": "node esbuild.mjs --production"
+  },
+  "devDependencies": {
+    "@types/node": "20.19.0",
+    "@types/vscode": "1.90.0",
+    "@vscode/vsce": "3.6.0",
+    "esbuild": "0.25.10",
+    "ovsx": "1.3.0",
+    "typescript": "5.9.3"
+  }
+}
