@@ -13,6 +13,7 @@ import {
   type ExtensionRef,
   type InstalledExtension,
 } from "./core/inventory";
+import { mergeInstalled, readOnDisk, type OnDiskExtension } from "./core/ondisk";
 import { isIgnored, notification, Scanner, SEVERITY_ORDER, type StoredResult } from "./core/scanner";
 import { FileStore, Leader } from "./core/store";
 import { ExtensionsTree, isFlagged, type Row } from "./tree";
@@ -91,24 +92,47 @@ export function activate(context: vscode.ExtensionContext): void {
   const platform = currentPlatform(process.platform, process.arch, musl);
   const builtinRoot = path.join(vscode.env.appRoot, "extensions") + path.sep;
 
-  function installed(): { ext: InstalledExtension; ref: ExtensionRef | null }[] {
+  // Where this editor installs extensions: the folder this extension was installed into.
+  // Its extensions.json also lists extensions that aren't running yet (see ondisk.ts).
+  const extensionsDir =
+    context.extensionUri.scheme === "file" ? path.dirname(context.extensionUri.fsPath) : undefined;
+  let diskCache: { stamp: string; list: OnDiskExtension[] } | undefined;
+  function onDisk(): OnDiskExtension[] {
+    if (!extensionsDir) return [];
+    const mtime = (f: string) => {
+      try {
+        return String(fs.statSync(path.join(extensionsDir, f)).mtimeMs);
+      } catch {
+        return "-";
+      }
+    };
+    const stamp = `${mtime("extensions.json")}|${mtime(".obsolete")}`;
+    if (diskCache?.stamp !== stamp) diskCache = { stamp, list: readOnDisk(extensionsDir) };
+    return diskCache.list;
+  }
+
+  function installed(): { ext: InstalledExtension; ref: ExtensionRef | null; running: boolean }[] {
     const source = storeFor(vscode.env.appName, config().get<string>("store"));
-    return vscode.extensions.all
+    const running = vscode.extensions.all
       .filter((e) => {
         if (e.id.toLowerCase() === selfId) return false;
         if (e.packageJSON?.isBuiltin === true) return false;
         return !e.extensionUri.fsPath.startsWith(builtinRoot);
       })
-      .map((e) => {
+      .map((e): InstalledExtension => {
         const pj = e.packageJSON ?? {};
-        const ext: InstalledExtension = {
+        return {
           id: e.id,
           version: String(pj.version ?? ""),
           displayName: displayName(pj.displayName, e.id),
           targetPlatform: pj.__metadata?.targetPlatform ?? pj.targetPlatform,
         };
-        return { ext, ref: toRef(ext, source, platform) };
       });
+    return mergeInstalled(running, onDisk(), selfId).map(({ ext, running }) => ({
+      ext,
+      ref: toRef(ext, source, platform),
+      running,
+    }));
   }
   const ownRefs = () =>
     installed()
@@ -178,7 +202,7 @@ export function activate(context: vscode.ExtensionContext): void {
       return;
     }
     const [stored, ignored] = await Promise.all([loadResults(), loadIgnored()]);
-    const rows: Row[] = installed().map(({ ext, ref }) => {
+    const rows: Row[] = installed().map(({ ext, ref, running }) => {
       const key = ref ? refKey(ref) : `local:${ext.id.toLowerCase()}@${ext.version}`;
       const result = ref ? stored[key] : undefined;
       return {
@@ -189,6 +213,7 @@ export function activate(context: vscode.ExtensionContext): void {
         result,
         ignored: !!result && isIgnored(ignored, key, result.verdict),
         uncheckable: !ref,
+        notRunning: !running,
       };
     });
     tree.setRows(rows);
@@ -575,14 +600,28 @@ export function activate(context: vscode.ExtensionContext): void {
   // ---- triggers ----------------------------------------------------------------------
 
   let debounce: NodeJS.Timeout | undefined;
+  const extensionsChanged = () => {
+    clearTimeout(debounce);
+    debounce = setTimeout(() => {
+      void refresh();
+      void check();
+    }, CHANGE_DEBOUNCE_MS);
+  };
+  if (extensionsDir) {
+    // An install VS Code won't start until a restart doesn't fire onDidChange; the
+    // editor still writes it to extensions.json, so watch that too.
+    const watcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(vscode.Uri.file(extensionsDir), "{extensions.json,.obsolete}"),
+    );
+    context.subscriptions.push(
+      watcher,
+      watcher.onDidChange(extensionsChanged),
+      watcher.onDidCreate(extensionsChanged),
+      watcher.onDidDelete(extensionsChanged),
+    );
+  }
   context.subscriptions.push(
-    vscode.extensions.onDidChange(() => {
-      clearTimeout(debounce);
-      debounce = setTimeout(() => {
-        void refresh();
-        void check();
-      }, CHANGE_DEBOUNCE_MS);
-    }),
+    vscode.extensions.onDidChange(extensionsChanged),
     auth.onDidChange((signedIn: boolean) => {
       if (!signedIn) generation++;
       void refresh();

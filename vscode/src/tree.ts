@@ -11,6 +11,8 @@ export interface Row {
   ignored: boolean;
   /** Not sent: the ID or version isn't one the store could have published. */
   uncheckable?: boolean;
+  /** Installed but not running in this window (waiting for a restart, or disabled). */
+  notRunning?: boolean;
 }
 
 type Node =
@@ -121,7 +123,7 @@ export class ExtensionsTree implements vscode.TreeDataProvider<Node> {
     );
     item.id = row.key;
     item.iconPath = verdictIcon(row);
-    item.description = `${row.version} · ${row.uncheckable ? "Not checked" : VERDICT_LABEL[v ?? ""] ?? "Not checked yet"}${row.ignored ? " (ignored)" : ""}`;
+    item.description = `${row.version} · ${row.uncheckable ? "Not checked" : VERDICT_LABEL[v ?? ""] ?? "Not checked yet"}${row.ignored ? " (ignored)" : ""}${row.notRunning ? " · not running" : ""}`;
     item.tooltip = new vscode.MarkdownString(
       `**${row.name}** \`${row.id}@${row.version}\`\n\n${row.result?.reason ?? "Not checked yet"}`,
     );

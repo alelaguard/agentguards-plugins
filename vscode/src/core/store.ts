@@ -7,6 +7,34 @@ import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 
+const BUSY = new Set(["EPERM", "EACCES", "EBUSY"]);
+
+/**
+ * Replaces `to` with `from`. On Windows a rename over a file that something has open
+ * (another window reading it, an antivirus scan) fails with EPERM/EACCES/EBUSY for a
+ * moment; retry for up to about 3 s, as graceful-fs does. The temp file is removed if
+ * it never succeeds.
+ */
+export async function replaceFile(
+  from: string,
+  to: string,
+  rename: (a: string, b: string) => Promise<void> = fs.rename,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await rename(from, to);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code ?? "";
+      if (!BUSY.has(code) || attempt >= 12) {
+        await fs.rm(from, { force: true }).catch(() => undefined);
+        throw err;
+      }
+      await sleep(Math.min(20 * 2 ** attempt, 400));
+    }
+  }
+}
+
 export class FileStore {
   constructor(readonly dir: string) {}
 
@@ -27,7 +55,7 @@ export class FileStore {
     await fs.mkdir(path.dirname(this.file(name)), { recursive: true });
     const tmp = this.file(`${name}.${randomUUID()}.tmp`);
     await fs.writeFile(tmp, JSON.stringify(value));
-    await fs.rename(tmp, this.file(name));
+    await replaceFile(tmp, this.file(name));
   }
 
   private claimFile(key: string): string {
@@ -129,7 +157,7 @@ export class Leader {
     await fs.mkdir(this.dir, { recursive: true });
     const tmp = `${this.file}.${randomUUID()}.tmp`;
     await fs.writeFile(tmp, JSON.stringify({ id: this.id, at: this.now() }));
-    await fs.rename(tmp, this.file);
+    await replaceFile(tmp, this.file);
     await this.settle();
     return (await this.read())?.id === this.id;
   }

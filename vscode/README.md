@@ -59,7 +59,9 @@ plan's quota (re-checks of the same version within 30 days are free).
 
 ## Getting started
 
-1. Install the extension.
+1. Install the extension. Then look for the AgentGuards shield in the activity bar on the
+   left. If it isn't there, reload the window (Command Palette → **Developer: Reload
+   Window**). You can also click **AgentGuards: Sign in** in the status bar at the bottom.
 2. Click **Sign In** in the AgentGuards view, and approve the editor in your browser —
    or reuse the key the AgentGuards installer already saved, or paste an API key.
 3. Your installed extensions are checked within a few minutes. New installs and

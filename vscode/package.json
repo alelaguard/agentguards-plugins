@@ -2,7 +2,7 @@
   "name": "agentguards",
   "displayName": "AgentGuards — Extension Scanner",
   "description": "Checks the extensions you install for malware and vulnerable bundled code, on the AgentGuards service. Warns you and offers one-click uninstall.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "agentguards",
   "license": "FSL-1.1-MIT",
   "icon": "media/icon.png",
