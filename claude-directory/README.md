@@ -1,138 +1,70 @@
-# AgentGuards plugin for Claude Code — Claude plugin directory edition
+# AgentGuards for Claude — plugin directory edition
+
+Security scans for AI agents, as tools Claude can call:
+
+- **Scan untrusted text** — a web page, email, document, issue, or another
+  tool's output — for prompt injection, jailbreak attempts, leaked secrets and
+  personal data, before acting on it.
+- **Check a shell command** before running or recommending it: destructive
+  deletes, credential reads, data exfiltration, force pushes and infrastructure
+  changes come back with a risk level and a reason.
+- **Scan code** for security issues and hardcoded secrets before committing or
+  running it.
+
+The tools are read-only: they check what they are given and never run, change
+or delete anything.
 
 > [!IMPORTANT]
-> **This edition exists for the Claude plugin directory.** If you found AgentGuards
-> in Claude's plugin directory, you are in the right place.
->
-> **Installing from this GitHub repo, the `agentguards` marketplace or the
-> AgentGuards installer? Use [`agentguards-claude`](../claude) instead — not this
-> one.** Same guardrails, and it also lets safe everyday commands run without a
-> prompt, which the directory does not allow.
->
-> **Never install both.** Every hook would run twice, and `agentguards-claude`
-> would still approve safe commands for you.
-
-LLM security guardrails for Claude Code in one install: jailbreak and
-prompt-injection detection, web-content scanning, data-exfiltration blocking,
-and destructive-command authorization.
-
-Enforcement is configurable: **fail-closed by default** for strict security, or
-switch to fail-open (availability-first) with a single environment variable
-(`AGENTGUARDS_FAIL_OPEN=true`).
-
-**It never answers a permission prompt for you.** A dangerous command is
-blocked and a risky one is put to you for approval; every other command is left
-to Claude Code's own permission rules, exactly as if the plugin were not
-installed.
-
-This plugin bundles:
-
-- **enforcing hooks** — `UserPromptSubmit` input scanning, `PreToolUse` Bash
-  authorization, a pre-fetch URL check (WebFetch, `curl`/`wget`, MCP fetch
-  tools) and a scan of images and PDFs before Claude opens them (`Read`), and
-  `PostToolUse` web-content scanning/redaction and security scanning of file
-  writes,
-- the `setup`, `status` and `guardrails` skills.
-
-There is no MCP server: the hooks enforce everything on their own, so there is
-nothing for Claude to call. (Before 0.2.34 the plugin also bundled one.)
+> **These are tools Claude calls, not automatic enforcement.** A check runs only
+> when Claude calls a tool. For screening on every prompt, shell command and
+> fetched page that Claude cannot skip, use
+> [`agentguards-claude`](../claude) from this repo instead. One of the two is
+> enough: with both installed, the same things get checked twice.
 
 ## Install
+
+From Claude's plugin directory, or:
 
 ```
 /plugin marketplace add alelaguard/agentguards-plugins
 /plugin install agentguards@agentguards
 ```
 
-Then provide your API key ([create a free account](https://agentguards.co/sign-up?utm_source=github&utm_medium=readme&utm_campaign=plugins_repo&utm_content=claude_key) and
-copy one from the dashboard) so the hooks can authenticate:
+### Then sign in (required, once)
 
-```
-export AGENTGUARDS_API_KEY=ag_your_token_here
-```
+The tools do nothing until you connect your AgentGuards account:
 
-Add that line to your shell profile (`~/.bashrc`, `~/.zshrc`, …) and restart
-Claude Code. Or just run `/agentguards:setup` and it will walk you through it.
+1. Run `/mcp` in Claude Code.
+2. Select **agentguards**. It shows "needs authentication".
+3. Choose **Authenticate** and approve in the browser. No account yet? Create a
+   [free one](https://agentguards.co/sign-up) first.
 
-**No shell profile?** (Claude Desktop's Code tab, or any GUI-launched session
-that doesn't read `~/.bashrc`.) Set it in `~/.claude/settings.json` instead —
-this feeds the hooks exactly like a shell export:
+There is no API key to paste. Signing in creates an AgentGuards API key for your
+account (it appears under Keys in your dashboard) and gives it to Claude Code,
+which stores it and sends it only to AgentGuards.
 
-```json
-{
-  "env": {
-    "AGENTGUARDS_API_KEY": "ag_your_token_here"
-  }
-}
-```
+To sign out or switch accounts, open `/mcp` again and choose **Clear
+authentication**. That removes the key from Claude Code only: it stays valid
+until you revoke it under Keys in your [dashboard](https://agentguards.co/dashboard/keys).
+If you think the key was exposed, revoke it there.
 
-The plugin's **Configure** screen also accepts a key, as a fallback when the
-environment variable is not set.
+Scan results also appear in your AgentGuards dashboard.
 
-**The plain Chat tab is not supported** — hooks do not run there. Use the
-**Code** tab.
+## What it bundles
 
-**Cloud sessions (Cowork) are supported, with a one-time setup.** A cloud
-sandbox never reads your `~/.claude`, so the key cannot come from your machine,
-and its network is allowlisted by default. On the environment at claude.ai/code
-you need to set **Network access** to Custom and add `prod.agentguards.co`, add
-`AGENTGUARDS_API_KEY` under **Environment variables**, and enable the plugin
-from your repo's `.claude/settings.json`. Note that the environment-variables
-field is plaintext and readable by anyone using that environment, so prefer a
-separate key. Full walkthrough:
-[Claude Code in Cowork](https://agentguards.co/docs/claude-code-cowork).
+- the AgentGuards MCP server at `https://prod.agentguards.co/directory/mcp`
+  (`scan_untrusted_text`, `check_command_safety`, `scan_code`),
+- the `agentguards` skill, which tells Claude when to call them and how to act
+  on the result.
 
-## Commands
-
-- `/agentguards:setup` — set your API key and verify everything is wired up.
-- `/agentguards:status` — report whether the guardrails are active and healthy.
-
-## Configuration
-
-| Variable | Required | Default | Purpose |
-|---|---|---|---|
-| `AGENTGUARDS_API_KEY` | yes | — | Your `ag_` token. Falls back to the plugin option, then `~/.agentguards/credentials.json` (saved by the installer). |
-| `AGENTGUARDS_FAIL_OPEN` | no | `false` | Hooks fail **closed** by default (block when the service is unreachable). Set `true` to allow on error. |
-
-## How it works
-
-The hooks call the AgentGuards REST API on every prompt, before every Bash
-command, after every web fetch and after every file write — blocking or
-redacting when AgentGuards flags a risk. Claude Code runs them itself, so the
-model cannot skip or talk its way around them.
-
-Web fetches (since 0.2.35), when web scan is enabled for your account:
-
-- **before the fetch**, the URL is checked. A URL that carries a credential or
-  encoded secrets, points at a cloud metadata endpoint, or uses a non-web
-  scheme is stopped before the request is sent. If this check cannot reach
-  AgentGuards, the fetch goes ahead — the page is still scanned afterwards.
-- **after the fetch**, instructions hidden from a human reader (HTML comments,
-  invisible text, …) are removed and the rest of the page is passed on; a page
-  whose visible text addresses the agent with an attack is withheld.
-
-Fetch tools from MCP servers (names containing `fetch`, `browse`, `scrape`,
-`web_`, `url` or `http`) are checked the same way.
+No hooks and no scripts: nothing runs on your machine.
 
 ## What this plugin sends, and where
 
-Checking content means sending it to AgentGuards. The hooks send these to
-`https://prod.agentguards.co`, over HTTPS, with your API key in the
-`X-API-Key` header:
-
-| When | What is sent |
-|---|---|
-| You submit a prompt | The prompt text |
-| Before a Bash command runs | The command line |
-| Before a web fetch (WebFetch, `curl`/`wget`, MCP fetch tools) | The URL(s) |
-| After a web fetch | The fetched page or tool output |
-| After Claude writes or edits a file | The file's path and new content |
-| Before Claude opens an image or PDF (`Read` of `.png` `.jpg` `.jpeg` `.gif` `.webp` `.pdf`, or a Bash command that names one, e.g. `pdftotext report.pdf`) | The file itself, up to 5 MB (larger files: only its type and that it was too large). Not stored. Nothing is sent if your account has turned file scanning off on the Checks page. |
-
-Nothing is sent anywhere else, and the hooks send nothing when no API key is
-set. The hooks read your key from `AGENTGUARDS_API_KEY`, the plugin's
-**Configure** screen, or `~/.agentguards/credentials.json`, and send it only to
-AgentGuards. How the service handles and retains this data is described in the
-[privacy policy](https://agentguards.co/privacy).
+Only what a tool is called with: the text, command or code (with its file path,
+if given) goes to `https://prod.agentguards.co` over HTTPS, with the access
+token from your connected account. Nothing is sent when no tool is called, and
+nothing goes anywhere else. How the service handles and retains this data is
+described in the [privacy policy](https://agentguards.co/privacy).
 
 Learn more at https://agentguards.co.

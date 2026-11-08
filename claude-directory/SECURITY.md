@@ -17,9 +17,9 @@ timeline after triage.
 
 ## Scope
 
-This policy covers this plugin bundle (`claude/`), its hook scripts, and its
-manifests. The hosted AgentGuards service and REST
-API are covered separately at https://agentguards.co.
+This policy covers this plugin bundle (`claude-directory/`): its manifest,
+MCP configuration and skill. The hosted AgentGuards service, REST API and MCP
+server are covered separately at https://agentguards.co.
 
 ## Supported Versions
 
@@ -28,7 +28,13 @@ the `main` branch and released via the marketplace.
 
 ## Handling of Secrets
 
-These plugins never store credentials. The AgentGuards API key is read from the
-`AGENTGUARDS_API_KEY` environment variable at runtime and is never committed,
-logged, or transmitted anywhere except to the configured AgentGuards endpoint
-over HTTPS.
+This plugin stores and reads no credentials itself, and asks you to paste none.
+You connect your AgentGuards account through the MCP server's sign-in (OAuth).
+
+The access token that sign-in produces is an AgentGuards API key for your
+account, listed under Keys in your dashboard. It does not expire on its own and
+works for your account's whole API, not only these scans. Claude Code stores it
+and sends it only to the AgentGuards MCP server over HTTPS. Clearing the sign-in
+in Claude Code (`/mcp` → Clear authentication) deletes Claude Code's copy but
+does not revoke the key: revoke it in the dashboard, especially if you think it
+was exposed.

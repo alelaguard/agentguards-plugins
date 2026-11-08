@@ -55,8 +55,10 @@ default; set `AGENTGUARDS_FAIL_OPEN=true` if you prefer availability over enforc
 **Claude Code and Codex:** the installer signs you in through your browser, adds the plugin to
 whichever of the two you have, and saves your key. Nothing to copy or paste.
 
-**Installed `agentguards` from Claude's plugin directory?** You're already set. Don't also run the
-installer or add `agentguards-claude`: every hook would run twice.
+**Installed `agentguards` from Claude's plugin directory?** That edition gives Claude AgentGuards
+tools to call when it decides a check is needed; it doesn't screen anything automatically. For
+automatic screening of every prompt, command and fetched page, run the installer above (it adds
+`agentguards-claude`) and remove the directory edition in `/plugin`, so nothing is checked twice.
 
 **Copilot CLI, OpenCode and Gemini CLI** also need a key.
 [Create a free account](https://agentguards.co/sign-up?utm_source=github&utm_medium=readme&utm_campaign=plugins_repo&utm_content=install_key),
@@ -103,7 +105,8 @@ Full configuration per agent: [Claude Code](./claude/README.md) · [Codex](./cod
      the agent only sees what was allowed
 ```
 
-The plugins in this repo are thin hooks: they hand each prompt, command and piece of fetched
+The agent plugins in this repo are thin hooks (all but `agentguards`, the Claude plugin-directory
+edition, which only gives Claude tools to call): they hand each prompt, command and piece of fetched
 content to the AgentGuards API, then enforce the answer inside the agent. Detection — injection and
 jailbreak classifiers, secret and PII scanning, command policy — runs server-side, so it improves
 without you reinstalling anything.
@@ -117,7 +120,7 @@ without you reinstalling anything.
 | Plugin | Agent | Deployment | Version | What it includes |
 |---|---|---|---|---|
 | [`agentguards-claude`](./claude) | Claude Code | hosted | `0.2.39` | Enforcing hooks (input, Bash, web-content with pre-fetch URL check, image/PDF scan before Read or a shell command reads them, code scan). No MCP server. |
-| [`agentguards`](./claude-directory) | Claude Code | hosted | `0.2.39` | **For the Claude plugin directory only — installing from this repo? Use `agentguards-claude` above, never both.** Directory edition generated from `agentguards-claude`: same hooks, but never answers a permission prompt for you (no auto-approval of safe commands). |
+| [`agentguards`](./claude-directory) | Claude Code | hosted | `1.0.0` | **For Claude's plugin directory.** Security scan tools Claude calls (untrusted text, shell commands, code) via the AgentGuards MCP server, connected with your account. No hooks, so no automatic enforcement — for that, use `agentguards-claude` above. |
 | [`agentguards-codex`](./codex) | OpenAI Codex | hosted | `0.2.25` | Enforcing hooks (input, shell, web-content with pre-fetch URL check, image/PDF scan before view_image or a shell command reads them, code scan). No MCP server. |
 | [`agentguards-gemini`](./gemini) | Gemini CLI | hosted | `0.1.10` | MCP server + enforcing hooks (input, tool-call, web-content with pre-fetch URL check) and security instructions. |
 | [`agentguards-copilot`](./copilot) | GitHub Copilot CLI | hosted | `0.1.9` | MCP server + enforcing hooks (input, shell, web-content with pre-fetch URL check) and security instructions. |

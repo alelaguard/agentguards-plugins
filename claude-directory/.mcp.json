@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "agentguards": {
+      "type": "http",
+      "url": "https://prod.agentguards.co/directory/mcp"
+    }
+  }
+}

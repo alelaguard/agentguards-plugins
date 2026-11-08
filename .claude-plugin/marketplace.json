@@ -22,7 +22,7 @@
     {
       "name": "agentguards",
       "source": "./claude-directory",
-      "description": "FOR THE CLAUDE PLUGIN DIRECTORY ONLY — installing from this marketplace? Install agentguards-claude instead, and never both. This is the directory edition of agentguards-claude: the same guardrails, but it never answers a permission prompt for you, so Claude Code asks before commands agentguards-claude would let run.",
+      "description": "AgentGuards for Claude's plugin directory: security scan tools Claude calls (untrusted text, shell commands, code), connected with your AgentGuards account. No hooks, no automatic enforcement — for that, install agentguards-claude.",
       "category": "Developer Tools",
       "keywords": [
         "security",

@@ -1,8 +1,8 @@
 {
   "name": "agentguards",
   "displayName": "AgentGuards",
-  "description": "LLM security guardrails for Claude Code — jailbreak detection, prompt-injection and web-content scanning, data-exfiltration blocking, and destructive-command authorization. Enforced by hooks on every prompt, shell command, fetched page and file write. Never answers a permission prompt for you: it blocks or asks, and Claude Code's own permission rules decide everything else.",
-  "version": "0.2.39",
+  "description": "Security scans for AI agents: check untrusted text for prompt injection, jailbreaks, leaked secrets and personal data; check shell commands before running them; scan code for vulnerabilities and hardcoded secrets. Tools Claude calls, not automatic enforcement. After installing, run /mcp, select agentguards and choose Authenticate to sign in.",
+  "version": "1.0.0",
   "author": {
     "name": "AgentGuards",
     "email": "support@agentguards.co",
@@ -11,12 +11,16 @@
   "homepage": "https://agentguards.co",
   "repository": "https://github.com/alelaguard/agentguards-plugins",
   "license": "FSL-1.1-MIT",
-  "userConfig": {
-    "agentguards_api_key": {
-      "type": "string",
-      "title": "AgentGuards API key",
-      "description": "Optional fallback for the hooks when AGENTGUARDS_API_KEY is not already set. The easiest way to set your key is to run /agentguards:setup in an Agent Mode or Local Code session and let Claude save it for you. Note the Claude Desktop app never reads a shell profile, so an export will not reach it.",
-      "sensitive": true
-    }
-  }
+  "keywords": [
+    "security",
+    "prompt-injection",
+    "jailbreak",
+    "secrets",
+    "guardrails"
+  ],
+  "icon": "./.claude-plugin/icon.png",
+  "documentationUrl": "https://agentguards.co/docs",
+  "supportUrl": "https://agentguards.co/support",
+  "privacyPolicyUrl": "https://agentguards.co/privacy",
+  "termsOfServiceUrl": "https://agentguards.co/terms"
 }
