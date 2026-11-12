@@ -380,16 +380,15 @@ function fetchMetadata(tool: string, args: any): Record<string, string> {
 
 type ActionDecision = "allow" | "deny" | "require-approval" | "dry-run" | "escalate"
 
-// Per-session approved-binaries cache: a bash call that reached tool.execute.after
-// actually ran (= approved), so we remember its binaries and skip re-asking later
-// in the same session. The risk scorer always runs first, so a remembered binary
-// can never carry a fresh destructive command through -- a deny still denies.
-//
-// Kept in-memory only (unlike the Python hooks' on-disk cache): each Python hook
-// invocation is a fresh subprocess, but an OpenCode plugin instance already lives
-// for the whole `opencode` process, so there's no cross-invocation state to bridge.
+// No per-session "approved binaries" cache, unlike the Python hooks. There, a
+// binary is remembered only after the user was genuinely asked and approved it.
+// Here require-approval is a hard block (see tool.execute.before), so no
+// require-approval command ever runs and nothing could ever be genuinely approved.
+// The cache this plugin used to keep recorded every bash call that ran -- i.e.
+// only commands the server had already allowed -- so a harmless `rm stale.log`
+// made a later `rm -rf ~/work` (require-approval) run unasked. Its only effect was
+// that bypass, so it is gone: a require-approval verdict always blocks.
 const SESSION_TTL_MS = 7 * 24 * 3600 * 1000
-const approvedBinaries = new Map<string, { binaries: Set<string>; ts: number }>()
 
 // authorize_action decisions from tool.execute.before, keyed by callID, so a
 // later permission.ask for the same call can reuse the verdict instead of
@@ -404,21 +403,6 @@ function pruneOld<K, V extends { ts: number }>(map: Map<K, V>): void {
   }
 }
 
-function rememberBinaries(sessionID: string, binaries: string[]): void {
-  if (!sessionID || binaries.length === 0) return
-  const entry = approvedBinaries.get(sessionID) ?? { binaries: new Set<string>(), ts: Date.now() }
-  binaries.forEach((b) => entry.binaries.add(b))
-  entry.ts = Date.now()
-  approvedBinaries.set(sessionID, entry)
-  pruneOld(approvedBinaries)
-}
-
-function hasApprovedBinaries(sessionID: string, binaries: string[]): boolean {
-  if (!sessionID || binaries.length === 0) return false
-  const entry = approvedBinaries.get(sessionID)
-  if (!entry) return false
-  return binaries.every((b) => entry.binaries.has(b))
-}
 
 function extractPromptText(parts: Array<{ type?: string; text?: string }>): string {
   return parts
@@ -572,10 +556,9 @@ export const AgentGuards: Plugin = async ({ client }) => {
       // without ever consulting a plugin hook, and by default (no permission
       // rule configured for the tool) it doesn't ask at all, so silently
       // returning here would let a borderline command through unchecked. Hard
-      // block instead, same as Gemini's proven fallback, unless every binary in
-      // this command was already approved earlier in the session.
-      const binaries = commandBinaries(command)
-      if (binaries.length > 0 && hasApprovedBinaries(input.sessionID, binaries)) return
+      // block instead, same as Gemini's proven fallback. No session history can
+      // downgrade this: an earlier allowed command with the same binary says
+      // nothing about this one (see the note above callDecisions).
       await blockTool(
         `${reason}\n\n    ${shown}\n\nRe-run after confirming you want to proceed with this command.`,
       )
@@ -619,13 +602,8 @@ export const AgentGuards: Plugin = async ({ client }) => {
     },
 
     "tool.execute.after": async (input, output) => {
-      const sessionID = input.sessionID
-
       if (input.tool === "bash") {
         const command = String((input.args as any)?.command ?? "")
-        // The command already ran (= it was allowed/approved) -- remember its
-        // binaries for this session so we don't re-ask for them.
-        rememberBinaries(sessionID, commandBinaries(command))
         if (!isFetchCommand(command)) return
       } else if (input.tool !== "webfetch" && !isMcpFetchTool(input.tool)) {
         return
