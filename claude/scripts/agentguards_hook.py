@@ -118,7 +118,7 @@ def _installer_key() -> str:
 AGENTGUARDS_URL = (os.getenv("AGENTGUARDS_URL") or "https://prod.agentguards.co").rstrip("/")
 # This plugin's version, sent with every request ("claude-code/py/<version>") so the API
 # can tell an outdated plugin how to update. Must equal plugin.json (a test checks).
-_PLUGIN_VERSION = "0.2.39"
+_PLUGIN_VERSION = "0.2.40"
 AGENTGUARDS_API_KEY = (
     os.getenv("AGENTGUARDS_API_KEY")
     or os.getenv("CLAUDE_PLUGIN_OPTION_AGENTGUARDS_API_KEY")
@@ -708,6 +708,127 @@ def _command_urls(command: str) -> list[str]:
     return urls[:_MAX_URLS]
 
 
+# Links only WRITTEN in a command, not fetched: the text of ONE commit or PR message
+# passed the usual way — `git commit -m "$(cat <<'EOF'` … `EOF` / `)"` (also git tag
+# and gh pr/issue/release create/edit/comment). The delimiter is quoted, so the shell
+# expands nothing in the text. The server records their known-bad/lookalike signals
+# instead of blocking (unless the tenant opts in).
+#
+# An ALLOWLIST of whole-command shapes: one such message, blank lines, and outside the
+# text only plain words or quoted strings with nothing the shell would expand or run.
+# Anything else and every link is checked as fetched, as before. Files are deliberately
+# not covered: a file written now can be run, loaded or read for links by a later command
+# that never shows the link (`bash notes.md`, `pip install -r requirements.txt`).
+#
+# The text must also end where every shell ends it. No line in it may start with the
+# delimiter: bash 5 ends a heredoc inside $(...) at "EOF)", and what follows runs. Its
+# parentheses must not let an older parser close the $( early (_parens_safe). No control
+# characters: bash 5 and dash drop a NUL, so "E<NUL>OF" ends the text there.
+# Outside the text, ASCII only and no "%": PowerShell (Codex, Copilot on Windows) would
+# otherwise read the line differently (`--%` stops its parsing, a Unicode quote is a
+# quote to it); as written, PowerShell fails to parse the "<<" and runs nothing.
+# _WINDOWS_SHELL_UNKNOWN: on Windows, an agent whose shell may be cmd.exe classifies
+# nothing as written (Claude runs Git Bash there, Codex PowerShell).
+# Image links in a GitHub message are fetched anyway, by GitHub's image proxy and every
+# reader: a gh message with "![" or any HTML tag is never "written".
+# After the closing `)"` only plain words: bash 3.2 tracks a quote opened in the text
+# (an apostrophe in "don't") across lines, so a quoted argument there could end it.
+_PLAIN = r"[A-Za-z0-9_\-./=:@,+~]+"
+_ARG = rf"""(?:{_PLAIN}|'[ -&(-~]*'|"[ !#%-\[\]-_a-~]*")"""
+_ARGS = rf"(?:[ \t]+{_ARG})*"
+_DELIM = r"""<<(-?)[ \t]*(?:'([A-Za-z0-9_]+)'|"([A-Za-z0-9_]+)"|\\([A-Za-z0-9_]+))"""
+_MESSAGE_RE = re.compile(
+    rf"^[ \t]*(?:git[ \t]+add{_ARGS}[ \t]*&&[ \t]*)?"
+    rf"(?:git[ \t]+(?:commit|tag)|gh[ \t]+(?:pr|issue|release)[ \t]+(?:create|edit|comment))"
+    rf"{_ARGS}[ \t]+\"\$\(cat[ \t]+{_DELIM}[ \t]*$"
+)
+_MESSAGE_END_RE = re.compile(rf"^\)\"(?:[ \t]+{_PLAIN})*[ \t]*$")
+_BLANK_LINE_RE = re.compile(r"^[ \t]*$")
+_WINDOWS_SHELL_UNKNOWN = False
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+_IMAGE_RE = re.compile(r"!\[|<[A-Za-z]")
+# The server screens written links only within its 8 KiB inline budget, shared with the
+# fetched ones, and skips them all past it: past it, every link is sent as fetched.
+_MAX_INLINE_URL_BYTES = 8 * 1024
+
+
+def _parens_safe(line: str) -> bool:
+    """Whether no shell can take a ")" in this message line as the end of the $(...).
+    bash 3.2 (macOS's /bin/bash) closes it at the first ")" it sees outside quotes,
+    and its quotes and backticks span lines, so a quote opened on an earlier line can
+    hide an "(" here. Safe whatever the quote state: balanced left to right, no quote,
+    backtick or "#" inside a pair, no backslash."""
+    if "(" not in line and ")" not in line:
+        return True
+    if "\\" in line:
+        return False
+    depth = 0
+    for ch in line:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth < 0:
+                return False
+        elif depth and ch in "'\"`#":
+            return False
+    return depth == 0
+
+
+def _split_heredocs(command: str) -> tuple[str, list[str]] | None:
+    """``(outer, [text])`` when the command only passes a message (see _MESSAGE_RE),
+    else None."""
+    if (_WINDOWS_SHELL_UNKNOWN and os.name == "nt") or _CONTROL_RE.search(command):
+        return None
+    lines = command.split("\n")
+    outer: list[str] = []
+    bodies: list[str] = []
+    i = 0
+    while i < len(lines):
+        match = _MESSAGE_RE.match(lines[i])
+        if not match:
+            if not _BLANK_LINE_RE.match(lines[i]):
+                return None
+            outer.append(lines[i])
+            i += 1
+            continue
+        if bodies:
+            return None  # one message per command
+        delim = match.group(2) or match.group(3) or match.group(4)
+        end = None
+        for j in range(i + 1, len(lines)):
+            if (lines[j].lstrip("\t") if match.group(1) else lines[j]) == delim:
+                end = j
+                break
+            if lines[j].lstrip(" \t").startswith(delim) or not _parens_safe(lines[j]):
+                return None
+        if end is None or end + 1 >= len(lines) or not _MESSAGE_END_RE.match(lines[end + 1]):
+            return None
+        text = "\n".join(lines[i + 1 : end])
+        if "gh" in lines[i] and _IMAGE_RE.search(text):
+            return None
+        bodies.append(text)
+        outer += [lines[i], lines[end], lines[end + 1]]
+        i = end + 2
+    return ("\n".join(outer), bodies) if bodies else None
+
+
+def _bash_urls(command: str) -> tuple[list[str], list[str]]:
+    """``(fetched, written)`` links of a shell command (see _split_heredocs)."""
+    split = _split_heredocs(command)
+    if split is None:
+        return _command_urls(command), []
+    outer, bodies = split
+    fetched = _command_urls(outer)
+    in_text = _command_urls("\n".join(bodies))
+    written = [url for url in in_text if url not in fetched]
+    size = sum(len(url.encode("utf-8", "surrogatepass")) for url in fetched + written)
+    if (len(in_text) >= _MAX_URLS or len(fetched) + len(written) > _MAX_URLS
+            or size > _MAX_INLINE_URL_BYTES):
+        return _command_urls(command), []
+    return fetched, written
+
+
 def _tool_urls(tool_name: str, tool_input: dict) -> list[str]:
     """The URL(s) a fetching tool call is about to request."""
     if tool_name == "Bash":
@@ -719,7 +840,9 @@ def _tool_urls(tool_name: str, tool_input: dict) -> list[str]:
     return []
 
 
-def _url_block_message(urls: list[str], tool_name: str) -> str | None:
+def _url_block_message(
+    urls: list[str], tool_name: str, written: list[str] | None = None
+) -> str | None:
     """Ask AgentGuards about *urls* before they are fetched. Returns the block message,
     or None to let the fetch go ahead.
 
@@ -727,14 +850,13 @@ def _url_block_message(urls: list[str], tool_name: str) -> str | None:
     quota): this is an extra layer in front of the content scan, which still runs on
     whatever comes back and keeps its own fail-closed setting. User decision 2026-09-27.
     """
-    if not urls:
+    if not urls and not written:
         return None
+    payload: dict = {"urls": urls, "tool": tool_name, "channel": "claude_code"}
+    if written:
+        payload["mentioned_urls"] = written
     try:
-        result = _post(
-            "/v1/guardrails/evaluate-url",
-            {"urls": urls, "tool": tool_name, "channel": "claude_code"},
-            timeout=_URL_CHECK_TIMEOUT,
-        )
+        result = _post("/v1/guardrails/evaluate-url", payload, timeout=_URL_CHECK_TIMEOUT)
     except Exception:
         return None
     if result.get("decision", "allow") in ("block", "escalate"):
@@ -1073,7 +1195,8 @@ def handle_pre_tool_use(event: dict) -> None:
     )
     if _is_fetch_command(command):
         # The message only: the blocked URL may itself be the secret being leaked.
-        message = _url_block_message(_tool_urls("Bash", tool_input), "Bash")
+        fetched, written = _bash_urls(command if isinstance(command, str) else "")
+        message = _url_block_message(fetched, "Bash", written)
         if message:
             _pre_tool("deny", message)
     try:

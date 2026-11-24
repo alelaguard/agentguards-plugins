@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.11
+
+- A link that a `bash` command only mentions in a commit or pull-request message, the usual `git commit -m "$(cat <<'EOF' … EOF)"` or `gh pr create --body "$(cat <<'EOF' …)"`, no longer counts as a link being fetched. Before, a message that said `curl https://…` was blocked whenever that site looked like a lookalike. AgentGuards now records the link and lets the command run, unless your account is set to block such links. Links a command really fetches are checked as before. So are links in files the command writes, since a later command could run or read those files.
+
 ## 0.1.10
 
 **Security fix: update recommended.**

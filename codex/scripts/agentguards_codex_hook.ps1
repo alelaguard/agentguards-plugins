@@ -511,7 +511,7 @@ function Read-Event {
 # --- Codex-specific ---------------------------------------------------------------------
 
 # This plugin's version (must equal plugin.json; a test checks), sent as codex/ps1/<version>.
-$PluginVersion = '0.2.25'
+$PluginVersion = '0.2.26'
 $script:ClientName = 'codex/ps1/' + $PluginVersion
 # os.getenv(name, default): the default applies only when UNSET, as in the Python hook.
 $script:AgentGuardsUrl = $env:AGENTGUARDS_URL
@@ -804,10 +804,12 @@ function Test-WebCommand([string]$Command) {
     return ((Test-CodexFetchCommand $Command) -or (Test-InterpreterFetch $Command))
 }
 
-# URLs to check before a web command runs; an interpreter one-liner sends only the
-# http(s) URLs of its own script. Mirrors _web_command_urls.
+# @{ Fetched; Written } URLs to check before a web command runs; an interpreter
+# one-liner sends only the http(s) URLs of its own script. Mirrors _web_command_urls.
 function Get-WebCommandUrls([string]$Command) {
-    if (Test-CodexFetchCommand $Command) { return , (Get-CommandUrls $Command) }
+    # A message mentioning `python3 -c "get(url)"` is text, not an interpreter fetch.
+    $bash = Get-BashUrls $Command
+    if ($bash.Written.Count -gt 0 -or (Test-CodexFetchCommand $Command)) { return $bash }
     $urls = [System.Collections.Generic.List[string]]::new()
     foreach ($st in (Get-Statements $Command)) {
         foreach ($p in $st) {
@@ -816,8 +818,9 @@ function Get-WebCommandUrls([string]$Command) {
             }
         }
     }
-    if ($urls.Count -gt $MaxUrls) { return , $urls.GetRange(0, $MaxUrls).ToArray() }
-    return , $urls.ToArray()
+    $fetched = $urls.ToArray()
+    if ($urls.Count -gt $MaxUrls) { $fetched = $urls.GetRange(0, $MaxUrls).ToArray() }
+    return @{ Fetched = $fetched; Written = [string[]]@() }
 }
 
 
@@ -859,6 +862,98 @@ function Get-CommandUrls([string]$Command) {
     return , $urls.ToArray()
 }
 
+# Links only WRITTEN in a command, not fetched: the text of ONE commit or PR message
+# (git commit -m "$(cat <<'EOF' ... EOF / )"). Mirrors _split_heredocs / _bash_urls,
+# which explain the rules: an allowlist of whole-command shapes, no files, a text that
+# ends where every shell ends it, ASCII-only arguments (PowerShell, which Codex runs
+# on Windows, then fails to parse the "<<" and runs nothing); anything else checks
+# every link as fetched.
+# After the closing `)"` only plain words (bash 3.2 carries a quote from the text).
+$WPlain = '[A-Za-z0-9_\-./=:@,+~]+'
+$WArg = '(?:' + $WPlain + '|''[ -&(-~]*''|"[ !#%-\[\]-_a-~]*")'
+$WArgs = '(?:[ \t]+' + $WArg + ')*'
+$WDelim = '<<(-?)[ \t]*(?:''([A-Za-z0-9_]+)''|"([A-Za-z0-9_]+)"|\\([A-Za-z0-9_]+))'
+$MessageRe = [regex]::new('^[ \t]*(?:git[ \t]+add' + $WArgs + '[ \t]*&&[ \t]*)?' +
+    '(?:git[ \t]+(?:commit|tag)|gh[ \t]+(?:pr|issue|release)[ \t]+(?:create|edit|comment))' +
+    $WArgs + '[ \t]+"\$\(cat[ \t]+' + $WDelim + '[ \t]*$')
+$MessageEndRe = [regex]::new('^\)"(?:[ \t]+' + $WPlain + ')*[ \t]*$')
+$BlankLineRe = [regex]::new('^[ \t]*$')
+$ControlRe = [regex]::new('[\x00-\x08\x0b-\x1f\x7f]')
+# A gh message with "![" or any HTML tag: GitHub's image proxy fetches its images.
+$ImageRe = [regex]::new('!\[|<[A-Za-z]')
+$MaxInlineUrlBytes = 8 * 1024
+
+# Whether no shell can take a ")" in this message line as the end of the $(...)
+# (mirrors _parens_safe).
+function Test-ParensSafe([string]$Line) {
+    if (-not $Line.Contains('(') -and -not $Line.Contains(')')) { return $true }
+    if ($Line.Contains('\')) { return $false }
+    $depth = 0
+    foreach ($ch in $Line.ToCharArray()) {
+        if ($ch -ceq '(') { $depth++ }
+        elseif ($ch -ceq ')') { $depth--; if ($depth -lt 0) { return $false } }
+        elseif ($depth -gt 0 -and "'`"``#".Contains([string]$ch)) { return $false }
+    }
+    return ($depth -eq 0)
+}
+
+# @{ Outer; Bodies } when the command only passes a message, else $null.
+function Split-Heredocs([string]$Command) {
+    if ($ControlRe.IsMatch($Command)) { return $null }
+    $lines = $Command.Split([char]10)
+    $outer = [System.Collections.Generic.List[string]]::new()
+    $bodies = [System.Collections.Generic.List[string]]::new()
+    $i = 0
+    while ($i -lt $lines.Length) {
+        $m = $MessageRe.Match($lines[$i])
+        if (-not $m.Success) {
+            if (-not $BlankLineRe.IsMatch($lines[$i])) { return $null }
+            $outer.Add($lines[$i])
+            $i++
+            continue
+        }
+        if ($bodies.Count -gt 0) { return $null }  # one message per command
+        $delim = $m.Groups[2].Value
+        if ($delim.Length -eq 0) { $delim = $m.Groups[3].Value }
+        if ($delim.Length -eq 0) { $delim = $m.Groups[4].Value }
+        $dash = $m.Groups[1].Value -ceq '-'
+        $end = -1
+        for ($j = $i + 1; $j -lt $lines.Length; $j++) {
+            $candidate = $lines[$j]
+            if ($dash) { $candidate = $candidate.TrimStart([char]9) }
+            if ($candidate -ceq $delim) { $end = $j; break }
+            if ($lines[$j].TrimStart([char]32, [char]9).StartsWith($delim, [System.StringComparison]::Ordinal) -or
+                -not (Test-ParensSafe $lines[$j])) { return $null }
+        }
+        if ($end -lt 0 -or $end + 1 -ge $lines.Length -or -not $MessageEndRe.IsMatch($lines[$end + 1])) { return $null }
+        $text = [string]::Join("`n", $lines, $i + 1, $end - $i - 1)
+        if ($lines[$i].Contains('gh') -and $ImageRe.IsMatch($text)) { return $null }
+        $bodies.Add($text)
+        $outer.Add($lines[$i])
+        $outer.Add($lines[$end])
+        $outer.Add($lines[$end + 1])
+        $i = $end + 2
+    }
+    if ($bodies.Count -eq 0) { return $null }
+    return @{ Outer = ($outer -join "`n"); Bodies = $bodies.ToArray() }
+}
+
+# @{ Fetched; Written } links of a shell command (mirrors _bash_urls).
+function Get-BashUrls([string]$Command) {
+    $split = Split-Heredocs $Command
+    if ($null -eq $split) { return @{ Fetched = (Get-CommandUrls $Command); Written = [string[]]@() } }
+    $fetched = Get-CommandUrls $split.Outer
+    $inText = Get-CommandUrls ($split.Bodies -join "`n")
+    $written = [System.Collections.Generic.List[string]]::new()
+    foreach ($url in $inText) { if (-not ($fetched -ccontains $url)) { $written.Add($url) } }
+    $size = 0
+    foreach ($url in @($fetched) + @($written)) { $size += [System.Text.Encoding]::UTF8.GetByteCount($url) }
+    if ($inText.Count -ge $MaxUrls -or ($fetched.Count + $written.Count) -gt $MaxUrls -or $size -gt $MaxInlineUrlBytes) {
+        return @{ Fetched = (Get-CommandUrls $Command); Written = [string[]]@() }
+    }
+    return @{ Fetched = $fetched; Written = $written.ToArray() }
+}
+
 # The URL(s) a fetching tool call is about to request. Returns `, $array`; callers must
 # not re-wrap it in @() (an empty result would become one empty element).
 function Get-ToolUrls($ToolInput) {
@@ -874,14 +969,19 @@ function Get-ToolUrls($ToolInput) {
 
 # Every URL of the call in one request: the block message, or $null to let the fetch go
 # ahead. ANY failure allows - the content scan still runs on whatever comes back.
-function Get-UrlBlockMessage($Urls, [string]$ToolName) {
-    if ($null -eq $Urls -or $Urls.Count -eq 0) { return $null }
+function Get-UrlBlockMessage($Urls, [string]$ToolName, $Written = $null) {
+    $hasWritten = $null -ne $Written -and $Written.Count -gt 0
+    if (($null -eq $Urls -or $Urls.Count -eq 0) -and -not $hasWritten) { return $null }
+    $payload = [ordered]@{
+        urls    = [string[]]@($Urls | Where-Object { $null -ne $_ })
+        tool    = $ToolName
+        channel = 'codex_hook'
+    }
+    # Links only written in the command (a file, a message): the server records their
+    # reputation signals instead of blocking, unless the tenant opted in.
+    if ($hasWritten) { $payload['mentioned_urls'] = [string[]]$Written }
     try {
-        $result = Invoke-AgentGuards '/v1/guardrails/evaluate-url' ([ordered]@{
-                urls    = [string[]]$Urls
-                tool    = $ToolName
-                channel = 'codex_hook'
-            }) $UrlCheckTimeout
+        $result = Invoke-AgentGuards '/v1/guardrails/evaluate-url' $payload $UrlCheckTimeout
     } catch {
         return $null
     }
@@ -1641,7 +1741,8 @@ function Invoke-PreToolUse($Evt) {
         # The message only: the blocked URL may itself be the secret being leaked.
         $urlTool = $toolName
         if ($urlTool.Length -eq 0) { $urlTool = 'Bash' }
-        $message = Get-UrlBlockMessage (Get-WebCommandUrls $ctx.Command) $urlTool
+        $webUrls = Get-WebCommandUrls $ctx.Command
+        $message = Get-UrlBlockMessage $webUrls.Fetched $urlTool $webUrls.Written
         if ($null -ne $message) { Exit-Deny $message }
     }
     try {

@@ -333,6 +333,95 @@ function commandUrls(command: string): string[] {
   return urls.slice(0, MAX_URLS)
 }
 
+// Links only WRITTEN in a command, not fetched: the text of ONE commit or PR message
+// (git commit -m "$(cat <<'EOF' ... EOF / )"). The server records their
+// known-bad/lookalike signals instead of blocking (unless the tenant opts in). Mirrors
+// _split_heredocs / _bash_urls in the Python hooks, which explain the rules: an allowlist
+// of whole-command shapes, no files (a later command can run or read them without
+// showing the link), a text that ends where every shell ends it, ASCII-only arguments,
+// no control characters, no image links (GitHub fetches those), and nothing on Windows
+// (the shell may be cmd.exe). Anything else and every link is checked as fetched.
+// After the closing `)"` only plain words (bash 3.2 carries a quote from the text).
+const W_PLAIN = "[A-Za-z0-9_\\-./=:@,+~]+"
+const W_ARG = "(?:" + W_PLAIN + "|'[ -&(-~]*'|\"[ !#%-\\[\\]-_a-~]*\")"
+const W_ARGS = `(?:[ \\t]+${W_ARG})*`
+const W_DELIM = "<<(-?)[ \\t]*(?:'([A-Za-z0-9_]+)'|\"([A-Za-z0-9_]+)\"|\\\\([A-Za-z0-9_]+))"
+const MESSAGE_RE = new RegExp(
+  `^[ \\t]*(?:git[ \\t]+add${W_ARGS}[ \\t]*&&[ \\t]*)?` +
+  "(?:git[ \\t]+(?:commit|tag)|gh[ \\t]+(?:pr|issue|release)[ \\t]+(?:create|edit|comment))" +
+  `${W_ARGS}[ \\t]+"\\$\\(cat[ \\t]+${W_DELIM}[ \\t]*$`, "u")
+const MESSAGE_END_RE = new RegExp(`^\\)"(?:[ \\t]+${W_PLAIN})*[ \\t]*$`, "u")
+const BLANK_LINE_RE = /^[ \t]*$/
+const CONTROL_RE = /[\x00-\x08\x0b-\x1f\x7f]/
+// A gh message with "![" or any HTML tag: GitHub's image proxy fetches its images.
+const IMAGE_RE = /!\[|<[A-Za-z]/
+// The server screens written links only within its 8 KiB inline budget, shared with the
+// fetched ones, and skips them all past it: past it, every link is sent as fetched.
+const MAX_INLINE_URL_BYTES = 8 * 1024
+
+// Whether no shell can take a ")" in this message line as the end of the $(...).
+// bash 3.2 (macOS's /bin/bash) closes it at the first ")" outside quotes, and its
+// quotes span lines; safe whatever the quote state: balanced, no quote, backtick or "#"
+// inside a pair, no backslash.
+function parensSafe(line: string): boolean {
+  if (!line.includes("(") && !line.includes(")")) return true
+  if (line.includes("\\")) return false
+  let depth = 0
+  for (const ch of line) {
+    if (ch === "(") depth++
+    else if (ch === ")") { if (--depth < 0) return false }
+    else if (depth > 0 && "'\"`#".includes(ch)) return false
+  }
+  return depth === 0
+}
+
+// { outer, bodies } when the command only passes a message, else undefined.
+function splitHeredocs(command: string): { outer: string; bodies: string[] } | undefined {
+  if (process.platform === "win32" || CONTROL_RE.test(command)) return undefined
+  const lines = command.split("\n")
+  const outer: string[] = []
+  const bodies: string[] = []
+  let i = 0
+  while (i < lines.length) {
+    const match = MESSAGE_RE.exec(lines[i])
+    if (!match) {
+      if (!BLANK_LINE_RE.test(lines[i])) return undefined
+      outer.push(lines[i])
+      i++
+      continue
+    }
+    if (bodies.length) return undefined // one message per command
+    const delim = match[2] || match[3] || match[4]
+    let end = -1
+    for (let j = i + 1; j < lines.length; j++) {
+      if ((match[1] ? lines[j].replace(/^\t+/, "") : lines[j]) === delim) { end = j; break }
+      if (lines[j].replace(/^[ \t]+/, "").startsWith(delim) || !parensSafe(lines[j])) return undefined
+    }
+    if (end < 0 || end + 1 >= lines.length || !MESSAGE_END_RE.test(lines[end + 1])) return undefined
+    const text = lines.slice(i + 1, end).join("\n")
+    if (lines[i].includes("gh") && IMAGE_RE.test(text)) return undefined
+    bodies.push(text)
+    outer.push(lines[i], lines[end], lines[end + 1])
+    i = end + 2
+  }
+  return bodies.length ? { outer: outer.join("\n"), bodies } : undefined
+}
+
+// { fetched, written } links of a shell command (see splitHeredocs).
+function bashUrls(command: string): { fetched: string[]; written: string[] } {
+  const split = splitHeredocs(command)
+  if (!split) return { fetched: commandUrls(command), written: [] }
+  const fetched = commandUrls(split.outer)
+  const inText = commandUrls(split.bodies.join("\n"))
+  const written = inText.filter((url) => !fetched.includes(url))
+  const encoder = new TextEncoder()
+  const size = [...fetched, ...written].reduce((n, url) => n + encoder.encode(url).length, 0)
+  if (inText.length >= MAX_URLS || fetched.length + written.length > MAX_URLS || size > MAX_INLINE_URL_BYTES) {
+    return { fetched: commandUrls(command), written: [] }
+  }
+  return { fetched, written }
+}
+
 // The URL(s) a fetching tool call is about to request.
 function toolUrls(tool: string, args: any): string[] {
   if (tool === "bash") return commandUrls(String(args?.command ?? ""))
@@ -355,10 +444,14 @@ function isFetchCall(tool: string, args: any): boolean {
 // or undefined to let the fetch go ahead. ANY failure allows (unreachable, timeout, 404
 // from a server without the endpoint, quota) -- the content scan still runs on whatever
 // comes back. User decision 2026-09-27.
-async function urlBlockMessage(urls: string[], tool: string): Promise<string | undefined> {
-  if (urls.length === 0) return undefined
+async function urlBlockMessage(urls: string[], tool: string, written: string[] = []): Promise<string | undefined> {
+  if (urls.length === 0 && written.length === 0) return undefined
+  const payload: Record<string, unknown> = { urls, tool, channel: "opencode" }
+  // Links only written in the command (a file, a message): the server records their
+  // reputation signals instead of blocking, unless the tenant opted in.
+  if (written.length) payload.mentioned_urls = written
   try {
-    const result = await post("/v1/guardrails/evaluate-url", { urls, tool, channel: "opencode" }, URL_CHECK_TIMEOUT_MS)
+    const result = await post("/v1/guardrails/evaluate-url", payload, URL_CHECK_TIMEOUT_MS)
     if (result?.decision === "block" || result?.decision === "escalate") {
       return result.message || "🛡️ [AgentGuards] Fetch blocked\nReason: policy"
     }
@@ -509,7 +602,10 @@ export const AgentGuards: Plugin = async ({ client }) => {
       // server allows everything while web_scan is off. The message only -- never the
       // URL, which may itself be the secret being leaked.
       if (isFetchCall(input.tool, args) && configured()) {
-        const message = await urlBlockMessage(toolUrls(input.tool, args), input.tool)
+        const { fetched, written } = input.tool === "bash"
+          ? bashUrls(String(args?.command ?? ""))
+          : { fetched: toolUrls(input.tool, args), written: [] as string[] }
+        const message = await urlBlockMessage(fetched, input.tool, written)
         if (message) await blockTool(message)
       }
       if (input.tool !== "bash") return

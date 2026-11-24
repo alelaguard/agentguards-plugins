@@ -119,12 +119,12 @@ without you reinstalling anything.
 
 | Plugin | Agent | Deployment | Version | What it includes |
 |---|---|---|---|---|
-| [`agentguards-claude`](./claude) | Claude Code | hosted | `0.2.39` | Enforcing hooks (input, Bash, web-content with pre-fetch URL check, image/PDF scan before Read or a shell command reads them, code scan). No MCP server. |
+| [`agentguards-claude`](./claude) | Claude Code | hosted | `0.2.40` | Enforcing hooks (input, Bash, web-content with pre-fetch URL check, image/PDF scan before Read or a shell command reads them, code scan). No MCP server. |
 | [`agentguards`](./claude-directory) | Claude Code | hosted | `1.0.0` | **For Claude's plugin directory.** Security scan tools Claude calls (untrusted text, shell commands, code) via the AgentGuards MCP server, connected with your account. No hooks, so no automatic enforcement — for that, use `agentguards-claude` above. |
-| [`agentguards-codex`](./codex) | OpenAI Codex | hosted | `0.2.25` | Enforcing hooks (input, shell, web-content with pre-fetch URL check, image/PDF scan before view_image or a shell command reads them, code scan). No MCP server. |
-| [`agentguards-gemini`](./gemini) | Gemini CLI | hosted | `0.1.10` | MCP server + enforcing hooks (input, tool-call, web-content with pre-fetch URL check) and security instructions. |
-| [`agentguards-copilot`](./copilot) | GitHub Copilot CLI | hosted | `0.1.9` | MCP server + enforcing hooks (input, shell, web-content with pre-fetch URL check) and security instructions. |
-| [`@agentguardsco/opencode-plugin`](./opencode) | OpenCode | hosted | `0.1.10` | Enforcing plugin (prompt, `bash`, web-content with pre-fetch URL check), + MCP server and security instructions. |
+| [`agentguards-codex`](./codex) | OpenAI Codex | hosted | `0.2.26` | Enforcing hooks (input, shell, web-content with pre-fetch URL check, image/PDF scan before view_image or a shell command reads them, code scan). No MCP server. |
+| [`agentguards-gemini`](./gemini) | Gemini CLI | hosted | `0.1.11` | MCP server + enforcing hooks (input, tool-call, web-content with pre-fetch URL check) and security instructions. |
+| [`agentguards-copilot`](./copilot) | GitHub Copilot CLI | hosted | `0.1.10` | MCP server + enforcing hooks (input, shell, web-content with pre-fetch URL check) and security instructions. |
+| [`@agentguardsco/opencode-plugin`](./opencode) | OpenCode | hosted | `0.1.11` | Enforcing plugin (prompt, `bash`, web-content with pre-fetch URL check), + MCP server and security instructions. |
 | [`agentguards.agentguards`](./vscode) | VS Code (Marketplace), Open VSX | hosted | `0.1.1` | Not an agent plugin: checks your editor's extensions for malware and vulnerable bundled code, and connects Claude Code and Codex. Install it from the VS Code Marketplace or Open VSX. |
 
 Versions are the current release in this repo; our release checks fail if they drift from the plugin
