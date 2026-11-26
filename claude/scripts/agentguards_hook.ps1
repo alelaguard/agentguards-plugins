@@ -722,7 +722,7 @@ function Test-OnlyRedactResolvableFailed($Result) {
 # --- Claude Code-specific -------------------------------------------------------------
 
 # This plugin's version (must equal plugin.json; a test checks), sent as claude-code/ps1/<version>.
-$PluginVersion = '0.2.40'
+$PluginVersion = '0.2.41'
 $script:ClientName = 'claude-code/ps1/' + $PluginVersion
 # (os.getenv(...) or default): an EMPTY value also means the default here.
 $script:AgentGuardsUrl = $env:AGENTGUARDS_URL

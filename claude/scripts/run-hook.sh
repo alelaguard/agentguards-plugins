@@ -19,6 +19,24 @@ set -u
 event="${1:-}"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# LLM usage reports (agentguards_usage.py) — opt-in, Linux/macOS only for now.
+#   They must cost nothing while tracking is off. The marker file exists only while
+#   the dashboard has it on. Without it, UsageTick (after EVERY tool call) ends here
+#   before any interpreter starts, and a turn end starts Python only when the cached
+#   "is it on?" answer is over an hour old. Windows (PowerShell hook) has no usage
+#   reports yet, so these events end here there too.
+case "$event" in
+  Stop|SubagentStop|UsageTick)
+    if [ "${OS:-}" = "Windows_NT" ]; then exit 0; fi
+    if [ ! -f "${HOME}/.claude/agentguards_usage_on" ]; then
+      [ "$event" = "UsageTick" ] && exit 0
+      cfg="${HOME}/.claude/agentguards_usage_config.json"
+      if [ -f "$cfg" ] && [ -n "$(find "$cfg" -mmin -60 2>/dev/null)" ]; then exit 0; fi
+    fi
+    command -v python3 >/dev/null 2>&1 || exit 0
+    ;;
+esac
+
 if [ "${OS:-}" = "Windows_NT" ]; then
   ps=powershell
   command -v powershell >/dev/null 2>&1 || ps=pwsh

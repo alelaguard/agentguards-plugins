@@ -118,7 +118,7 @@ def _installer_key() -> str:
 AGENTGUARDS_URL = (os.getenv("AGENTGUARDS_URL") or "https://prod.agentguards.co").rstrip("/")
 # This plugin's version, sent with every request ("claude-code/py/<version>") so the API
 # can tell an outdated plugin how to update. Must equal plugin.json (a test checks).
-_PLUGIN_VERSION = "0.2.40"
+_PLUGIN_VERSION = "0.2.41"
 AGENTGUARDS_API_KEY = (
     os.getenv("AGENTGUARDS_API_KEY")
     or os.getenv("CLAUDE_PLUGIN_OPTION_AGENTGUARDS_API_KEY")
@@ -1474,11 +1474,41 @@ def handle_post_tool_use(event: dict) -> None:
     _allow()
 
 
+def handle_usage(event_type: str, event: dict) -> None:
+    """Send this session's LLM usage counts if the tenant tracks them (dashboard).
+
+    Lives in its own module, imported only here, so nothing in it can affect the
+    guardrail events. Any failure is swallowed. A notice from the server (e.g. a
+    budget passed) is shown to the user — never added to the model's context — at
+    the end of a turn, once per session.
+    """
+    try:
+        import agentguards_usage
+
+        notice = agentguards_usage.handle(
+            event_type,
+            event if isinstance(event, dict) else {},
+            url=AGENTGUARDS_URL,
+            key=AGENTGUARDS_API_KEY,
+            client=f"claude-code/py/{_PLUGIN_VERSION}",
+            ssl_context=_ssl_context,
+        )
+    except Exception:
+        return
+    if notice and event_type == "Stop":
+        print(json.dumps({"systemMessage": f"\N{SHIELD}\N{VARIATION SELECTOR-16} {notice}"}))
+
+
 def main() -> None:
     event_type = sys.argv[1] if len(sys.argv) > 1 else ""
     try:
         event = json.loads(sys.stdin.read())
     except json.JSONDecodeError:
+        _allow()
+
+    # LLM usage reports (opt-in, agentguards_usage.py): never block, never warn.
+    if event_type in ("Stop", "SubagentStop", "UsageTick"):
+        handle_usage(event_type, event)
         _allow()
 
     # PostToolUse only updates the local approval cache — no service call, so it
