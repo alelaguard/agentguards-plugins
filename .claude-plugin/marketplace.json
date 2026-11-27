@@ -22,7 +22,7 @@
     {
       "name": "agentguards",
       "source": "./claude-directory",
-      "description": "AgentGuards for Claude's plugin directory: security scan tools Claude calls (untrusted text, shell commands, code), connected with your AgentGuards account. No hooks, no automatic enforcement — for that, install agentguards-claude.",
+      "description": "AgentGuards for Claude's plugin directory: security scan tools Claude calls when you ask (untrusted text, shell commands, code), connected with your AgentGuards account. No hooks, no automatic enforcement — for that, install agentguards-claude.",
       "category": "Developer Tools",
       "keywords": [
         "security",

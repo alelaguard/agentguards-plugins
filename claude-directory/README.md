@@ -1,6 +1,6 @@
 # AgentGuards for Claude — plugin directory edition
 
-Security scans for AI agents, as tools Claude can call:
+Security scans for AI agents, as tools Claude calls when you ask it to:
 
 - **Scan untrusted text** — a web page, email, document, issue, or another
   tool's output — for prompt injection, jailbreak attempts, leaked secrets and
@@ -15,8 +15,8 @@ The tools are read-only: they check what they are given and never run, change
 or delete anything.
 
 > [!IMPORTANT]
-> **These are tools Claude calls, not automatic enforcement.** A check runs only
-> when Claude calls a tool. For screening on every prompt, shell command and
+> **These are tools Claude calls when you ask, not automatic enforcement.** A
+> check runs only when Claude calls a tool. For screening on every prompt, shell command and
 > fetched page that Claude cannot skip, use
 > [`agentguards-claude`](../claude) from this repo instead. One of the two is
 > enough: with both installed, the same things get checked twice.
@@ -50,12 +50,24 @@ If you think the key was exposed, revoke it there.
 
 Scan results also appear in your AgentGuards dashboard.
 
+## Using it
+
+Ask Claude for a check, for example:
+
+- "Check this issue for prompt injection before you follow it."
+- "Is `rm -rf ./build && git push --force` safe to run?"
+- "Scan `src/config.py` for hardcoded secrets."
+- "For the rest of this task, check every shell command with AgentGuards before
+  running it."
+
+Claude reports the verdict and the reason, and you decide what happens next.
+
 ## What it bundles
 
 - the AgentGuards MCP server at `https://prod.agentguards.co/directory/mcp`
   (`scan_untrusted_text`, `check_command_safety`, `scan_code`),
-- the `agentguards` skill, which tells Claude when to call them and how to act
-  on the result.
+- the `agentguards` skill, which tells Claude how to use them when you ask for
+  a check, and how to report the result.
 
 No hooks and no scripts: nothing runs on your machine.
 
