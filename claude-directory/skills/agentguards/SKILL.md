@@ -11,9 +11,9 @@ verdict. None of them runs, changes or deletes anything.
 
 | Tool | What it does | Verdicts |
 |---|---|---|
-| `scan_untrusted_text` | Checks a piece of text for prompt injection, jailbreak attempts, secrets and personal data | allow / block / redact / escalate |
+| `scan_untrusted_text` | Checks outside text for instructions aimed at an AI agent; removes hidden ones and masks live keys. Not a personal-data check | allow / block / redact |
 | `check_command_safety` | Rates a shell command's risk, with a reason | allow / deny / require-approval |
-| `scan_code` | Looks for hardcoded secrets and security issues in code. Pass `file_path` when you know it | allow / warn / block |
+| `scan_code` | Static-analysis rules for common risky patterns, and hardcoded credentials in known formats. Not a full security review. Pass `file_path` when you know it | allow / warn / block |
 
 ## When to call them
 

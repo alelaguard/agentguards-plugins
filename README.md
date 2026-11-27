@@ -120,7 +120,7 @@ without you reinstalling anything.
 | Plugin | Agent | Deployment | Version | What it includes |
 |---|---|---|---|---|
 | [`agentguards-claude`](./claude) | Claude Code | hosted | `0.2.41` | Enforcing hooks (input, Bash, web-content with pre-fetch URL check, image/PDF scan before Read or a shell command reads them, code scan). Opt-in LLM usage reports (counts only). No MCP server. |
-| [`agentguards`](./claude-directory) | Claude Code | hosted | `1.1.0` | **For Claude's plugin directory.** Security scan tools Claude calls when you ask (untrusted text, shell commands, code) via the AgentGuards MCP server, connected with your account. No hooks, so no automatic enforcement — for that, use `agentguards-claude` above. |
+| [`agentguards`](./claude-directory) | Claude Code | hosted | `1.1.1` | **For Claude's plugin directory.** Security scan tools Claude calls when you ask (untrusted text, shell commands, code) via the AgentGuards MCP server, connected with your account. No hooks, so no automatic enforcement — for that, use `agentguards-claude` above. |
 | [`agentguards-codex`](./codex) | OpenAI Codex | hosted | `0.2.26` | Enforcing hooks (input, shell, web-content with pre-fetch URL check, image/PDF scan before view_image or a shell command reads them, code scan). No MCP server. |
 | [`agentguards-gemini`](./gemini) | Gemini CLI | hosted | `0.1.11` | MCP server + enforcing hooks (input, tool-call, web-content with pre-fetch URL check) and security instructions. |
 | [`agentguards-copilot`](./copilot) | GitHub Copilot CLI | hosted | `0.1.10` | MCP server + enforcing hooks (input, shell, web-content with pre-fetch URL check) and security instructions. |

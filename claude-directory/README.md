@@ -2,14 +2,17 @@
 
 Security scans for AI agents, as tools Claude calls when you ask it to:
 
-- **Scan untrusted text** — a web page, email, document, issue, or another
-  tool's output — for prompt injection, jailbreak attempts, leaked secrets and
-  personal data, before acting on it.
-- **Check a shell command** before running or recommending it: destructive
-  deletes, credential reads, data exfiltration, force pushes and infrastructure
-  changes come back with a risk level and a reason.
-- **Scan code** for security issues and hardcoded secrets before committing or
-  running it.
+- **Scan untrusted text** (a web page, email, document, issue, or another
+  tool's output) for instructions aimed at an AI agent (prompt injection).
+  Visible injection attempts are blocked; hidden instructions are removed and
+  live credentials in known formats (cloud and API keys) are masked. It does not
+  check for personal data.
+- **Check a shell command**: destructive deletes, force pushes, infrastructure
+  changes, credential reads, secret printing, privilege escalation and data
+  exfiltration come back as needing approval or denied, with a risk level and a
+  reason.
+- **Scan code** with static-analysis rules for common risky patterns and for
+  hardcoded credentials in known formats. It is not a full security review.
 
 The tools are read-only: they check what they are given and never run, change
 or delete anything.
@@ -18,7 +21,7 @@ or delete anything.
 > **These are tools Claude calls when you ask, not automatic enforcement.** A
 > check runs only when Claude calls a tool. For screening on every prompt, shell command and
 > fetched page that Claude cannot skip, use
-> [`agentguards-claude`](../claude) from this repo instead. One of the two is
+> [`agentguards-claude`](https://github.com/alelaguard/agentguards-plugins/tree/main/claude) instead. One of the two is
 > enough: with both installed, the same things get checked twice.
 
 ## Install
@@ -78,5 +81,10 @@ if given) goes to `https://prod.agentguards.co` over HTTPS, with the access
 token from your connected account. Nothing is sent when no tool is called, and
 nothing goes anywhere else. How the service handles and retains this data is
 described in the [privacy policy](https://agentguards.co/privacy).
+
+## Support
+
+- Help and contact: https://agentguards.co/support or support@agentguards.co
+- Security reports: see [SECURITY.md](./SECURITY.md)
 
 Learn more at https://agentguards.co.

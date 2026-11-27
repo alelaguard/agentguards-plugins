@@ -1,8 +1,8 @@
 {
   "name": "agentguards",
   "displayName": "AgentGuards",
-  "description": "Security scans for AI agents: check untrusted text for prompt injection, jailbreaks, leaked secrets and personal data; check shell commands before running them; scan code for vulnerabilities and hardcoded secrets. Tools Claude calls when you ask, not automatic enforcement. After installing, run /mcp, select agentguards and choose Authenticate to sign in.",
-  "version": "1.1.0",
+  "description": "Security scans for AI agents: check untrusted text for prompt injection aimed at the agent; check shell commands for destructive, credential-reading and other risky actions; scan code for risky patterns and hardcoded credentials. Tools Claude calls when you ask, not automatic enforcement. After installing, run /mcp, select agentguards and choose Authenticate to sign in.",
+  "version": "1.1.1",
   "author": {
     "name": "AgentGuards",
     "email": "support@agentguards.co",
@@ -14,7 +14,7 @@
   "keywords": [
     "security",
     "prompt-injection",
-    "jailbreak",
+    "shell-commands",
     "secrets",
     "guardrails"
   ],
